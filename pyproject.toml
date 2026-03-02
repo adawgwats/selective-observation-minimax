@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimax-optimization"
+version = "0.1.0"
+description = "Christensen-consistent minimax robustness under selective observation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Andrew Watson" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+hf = [
+  "torch>=2.2",
+  "transformers>=4.40",
+]
+
+[project.scripts]
+minimax-monte-carlo = "minimax_core.monte_carlo:main"
+minimax-gradient-validation = "minimax_core.gradient_validation:main"
+minimax-compare-baselines = "minimax_core.comparison:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["minimax_core*", "minimax_hf*"]
