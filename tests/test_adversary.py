@@ -2,6 +2,7 @@ from minimax_core import (
     Q1ObjectiveConfig,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    TimeVaryingObservationAdversary,
     estimate_group_snapshot,
 )
 
@@ -54,3 +55,19 @@ def test_score_based_adversary_downweights_high_score_examples() -> None:
     assert updated_q[3] < initial_q[3]
     assert updated_q[0] > initial_q[0]
     assert abs(sum(updated_q) / len(updated_q) - observation_rate) < 1e-8
+
+
+def test_time_varying_adversary_downweights_later_high_risk_examples_more() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = TimeVaryingObservationAdversary(config)
+    scores = [0.6, 0.6, 0.6, 0.6]
+    time_indices = [0, 1, 2, 3]
+    observation_rate = 0.6
+
+    initial_q = adversary.current_q(scores, observation_rate, time_indices)
+    updated_q = adversary.update(scores, observation_rate, time_indices)
+    weights = adversary.uncertainty_set.projection_weights(time_indices)
+
+    assert updated_q[-1] < updated_q[0]
+    assert updated_q[-1] < initial_q[-1]
+    assert abs(sum(weight * q for weight, q in zip(weights, updated_q)) / sum(weights) - observation_rate) < 1e-8

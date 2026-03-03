@@ -1,4 +1,9 @@
-from .adversary import ScoreBasedObservationAdversary, SelectiveObservationAdversary
+from .adversary import (
+    ObservationAdversary,
+    ScoreBasedObservationAdversary,
+    SelectiveObservationAdversary,
+    TimeVaryingObservationAdversary,
+)
 from .config import Q1ObjectiveConfig
 from .metrics import normalized_group_weights, worst_group_loss
 from .mnar import (
@@ -21,7 +26,15 @@ from .objectives import (
     robust_risk,
     score_based_risk,
 )
-from .uncertainty import ScoreBasedObservationSet, SelectiveObservationSet
+from .uncertainty import (
+    GroupedObservationUncertaintySet,
+    ObservationUncertaintySet,
+    ScoreBasedObservationSet,
+    ScoreObservationUncertaintySet,
+    SelectiveObservationSet,
+    TimeVaryingObservationSet,
+    TimeVaryingObservationUncertaintySet,
+)
 
 __all__ = [
     "AgricultureBenchmarkConfig",
@@ -37,15 +50,22 @@ __all__ = [
     "MNAR_VIEW_MODES",
     "MonteCarloConfig",
     "MonteCarloSummary",
+    "ObservationAdversary",
+    "ObservationUncertaintySet",
     "Q1ObjectiveConfig",
     "ScenarioComparisonSummary",
+    "ScoreObservationUncertaintySet",
     "ScoreBasedObservationAdversary",
     "ScoreBasedObservationSet",
+    "GroupedObservationUncertaintySet",
     "SelectiveObservationAdversary",
     "SelectiveObservationSet",
     "SyntheticMNARConfig",
     "SyntheticMNARResult",
     "TrialResult",
+    "TimeVaryingObservationAdversary",
+    "TimeVaryingObservationSet",
+    "TimeVaryingObservationUncertaintySet",
     "apply_synthetic_mnar",
     "build_group_adversarial_mask",
     "build_proxy_labels",

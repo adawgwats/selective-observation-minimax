@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Hashable, Mapping, Sequence
 
@@ -7,6 +8,69 @@ from .config import Q1ObjectiveConfig
 
 
 GroupId = Hashable
+
+
+@dataclass(frozen=True)
+class ObservationUncertaintySet(ABC):
+    config: Q1ObjectiveConfig
+
+
+@dataclass(frozen=True)
+class GroupedObservationUncertaintySet(ObservationUncertaintySet, ABC):
+    @abstractmethod
+    def initialize(
+        self,
+        group_order: Sequence[GroupId],
+        group_priors: Mapping[GroupId, float],
+        observation_rate: float,
+    ) -> dict[GroupId, float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(
+        self,
+        group_order: Sequence[GroupId],
+        group_priors: Mapping[GroupId, float],
+        proposed_q: Sequence[float],
+        observation_rate: float,
+    ) -> list[float]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ScoreObservationUncertaintySet(ObservationUncertaintySet, ABC):
+    @abstractmethod
+    def initialize(self, count: int, observation_rate: float) -> list[float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+    ) -> list[float]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class TimeVaryingObservationUncertaintySet(ObservationUncertaintySet, ABC):
+    @abstractmethod
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+    ) -> list[float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+    ) -> list[float]:
+        raise NotImplementedError
 
 
 def weighted_mean(values: Sequence[float], weights: Sequence[float]) -> float:
@@ -85,8 +149,7 @@ def project_to_boxed_weighted_mean(
 
 
 @dataclass(frozen=True)
-class SelectiveObservationSet:
-    config: Q1ObjectiveConfig
+class SelectiveObservationSet(GroupedObservationUncertaintySet):
 
     def _lower_bounds(self, group_order: Sequence[GroupId]) -> list[float]:
         return [self.config.q_min for _ in group_order]
@@ -126,8 +189,7 @@ class SelectiveObservationSet:
 
 
 @dataclass(frozen=True)
-class ScoreBasedObservationSet:
-    config: Q1ObjectiveConfig
+class ScoreBasedObservationSet(ScoreObservationUncertaintySet):
 
     def initialize(self, count: int, observation_rate: float) -> list[float]:
         if count <= 0:
@@ -155,3 +217,73 @@ class ScoreBasedObservationSet:
             tolerance=self.config.projection_tolerance,
             max_iterations=self.config.projection_max_iterations,
         )
+
+
+@dataclass(frozen=True)
+class TimeVaryingObservationSet(TimeVaryingObservationUncertaintySet):
+    time_strength: float = 0.5
+    min_projection_weight: float = 0.25
+
+    def __post_init__(self) -> None:
+        if self.time_strength < 0.0:
+            raise ValueError("time_strength must be nonnegative.")
+        if not 0.0 < self.min_projection_weight <= 1.0:
+            raise ValueError("min_projection_weight must be in (0, 1].")
+
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+    ) -> list[float]:
+        if count <= 0:
+            raise ValueError("count must be positive.")
+        if len(time_indices) != count:
+            raise ValueError("time_indices must match count.")
+        initial = [observation_rate for _ in range(count)]
+        return self.project(initial, observation_rate, time_indices)
+
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+    ) -> list[float]:
+        count = len(proposed_q)
+        if count <= 0:
+            raise ValueError("at least one proposed q value is required.")
+        if len(time_indices) != count:
+            raise ValueError("time_indices must have the same length as proposed_q.")
+        projection_weights = self.projection_weights(time_indices)
+        lower_bounds = [self.config.q_min for _ in range(count)]
+        upper_bounds = [self.config.q_max for _ in range(count)]
+        return project_to_boxed_weighted_mean(
+            values=proposed_q,
+            weights=projection_weights,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+            target_mean=observation_rate,
+            tolerance=self.config.projection_tolerance,
+            max_iterations=self.config.projection_max_iterations,
+        )
+
+    def time_factors(self, time_indices: Sequence[int]) -> list[float]:
+        normalized = self._normalize_time_indices(time_indices)
+        return [1.0 + self.time_strength * position for position in normalized]
+
+    def projection_weights(self, time_indices: Sequence[int]) -> list[float]:
+        return [
+            max(1.0 / factor, self.min_projection_weight)
+            for factor in self.time_factors(time_indices)
+        ]
+
+    @staticmethod
+    def _normalize_time_indices(time_indices: Sequence[int]) -> list[float]:
+        if not time_indices:
+            raise ValueError("time_indices must contain at least one value.")
+        min_time = min(time_indices)
+        max_time = max(time_indices)
+        if min_time == max_time:
+            return [0.0 for _ in time_indices]
+        scale = max_time - min_time
+        return [(time_index - min_time) / scale for time_index in time_indices]

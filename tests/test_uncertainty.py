@@ -1,3 +1,4 @@
+from minimax_core import Q1ObjectiveConfig, TimeVaryingObservationSet
 from minimax_core.uncertainty import project_to_boxed_weighted_mean, weighted_mean
 
 
@@ -12,3 +13,33 @@ def test_projection_preserves_box_and_mean() -> None:
 
     assert all(0.25 <= value <= 1.0 for value in projected)
     assert abs(weighted_mean(projected, [0.2, 0.3, 0.5]) - 0.65) < 1e-8
+
+
+def test_time_varying_projection_weights_decay_over_time() -> None:
+    uncertainty_set = TimeVaryingObservationSet(
+        Q1ObjectiveConfig(q_min=0.25, q_max=1.0),
+        time_strength=0.8,
+        min_projection_weight=0.2,
+    )
+
+    weights = uncertainty_set.projection_weights([0, 1, 2, 3])
+
+    assert weights[0] > weights[-1]
+    assert all(0.2 <= weight <= 1.0 for weight in weights)
+
+
+def test_time_varying_projection_preserves_temporal_weighted_mean() -> None:
+    uncertainty_set = TimeVaryingObservationSet(
+        Q1ObjectiveConfig(q_min=0.25, q_max=1.0),
+        time_strength=0.6,
+    )
+    time_indices = [0, 1, 2, 3]
+    projected = uncertainty_set.project(
+        proposed_q=[0.2, 0.25, 0.9, 1.2],
+        observation_rate=0.6,
+        time_indices=time_indices,
+    )
+    weights = uncertainty_set.projection_weights(time_indices)
+
+    assert all(0.25 <= value <= 1.0 for value in projected)
+    assert abs(weighted_mean(projected, weights) - 0.6) < 1e-8

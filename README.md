@@ -124,6 +124,18 @@ If `label_observed` is omitted, the trainer assumes all labels are observed.
 
 The long-term architecture is broader, but the current implemented HF method is intentionally narrow.
 
+## Uncertainty-set architecture
+
+`minimax_core` now exposes explicit uncertainty-set abstractions so the Christensen-style selective-observation objective can be extended toward Knightian ambiguity without changing the HF surface area.
+
+Available set families:
+
+- `SelectiveObservationSet`: grouped observation ambiguity, the current default
+- `ScoreBasedObservationSet`: per-example observation ambiguity from proxy scores
+- `TimeVaryingObservationSet`: a time-indexed extension where later observations can be given a different ambiguity budget than earlier ones
+
+The grouped and score adversaries currently drive the main benchmarks. The time-varying set is the first package-level seam for dynamic ambiguity over observation, which is the closest bridge to a Knightian extension in sequential settings.
+
 ## Synthetic MNAR tooling
 
 `minimax_core` now owns the reusable synthetic MNAR layer used by the agriculture benchmark.

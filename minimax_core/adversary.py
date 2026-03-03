@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+from abc import ABC
 from dataclasses import dataclass, field
 from typing import Hashable
 
 from .config import Q1ObjectiveConfig
 from .objectives import GroupSnapshot
-from .uncertainty import ScoreBasedObservationSet, SelectiveObservationSet
+from .uncertainty import (
+    GroupedObservationUncertaintySet,
+    ScoreBasedObservationSet,
+    ScoreObservationUncertaintySet,
+    SelectiveObservationSet,
+    TimeVaryingObservationSet,
+    TimeVaryingObservationUncertaintySet,
+)
 
 
 GroupId = Hashable
 
 
 @dataclass
-class SelectiveObservationAdversary:
+class ObservationAdversary(ABC):
     config: Q1ObjectiveConfig
-    uncertainty_set: SelectiveObservationSet | None = None
+
+
+@dataclass
+class SelectiveObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: GroupedObservationUncertaintySet | None = None
     _q_values: dict[GroupId, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -62,9 +75,9 @@ class SelectiveObservationAdversary:
 
 
 @dataclass
-class ScoreBasedObservationAdversary:
+class ScoreBasedObservationAdversary(ObservationAdversary):
     config: Q1ObjectiveConfig
-    uncertainty_set: ScoreBasedObservationSet | None = None
+    uncertainty_set: ScoreObservationUncertaintySet | None = None
     _q_values: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -107,3 +120,53 @@ class ScoreBasedObservationAdversary:
         if scale <= 0.0:
             return [0.0 for _ in scores]
         return [score / scale for score in scores]
+
+
+@dataclass
+class TimeVaryingObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: TimeVaryingObservationUncertaintySet | None = None
+    _q_values: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.uncertainty_set is None:
+            self.uncertainty_set = TimeVaryingObservationSet(self.config)
+
+    def current_q(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+    ) -> list[float]:
+        if self._needs_initialization(scores, time_indices):
+            self._q_values = self.uncertainty_set.initialize(
+                len(scores),
+                observation_rate,
+                time_indices,
+            )
+        return list(self._q_values)
+
+    def update(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+    ) -> list[float]:
+        current_q = self.current_q(scores, observation_rate, time_indices)
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        time_factors = self.uncertainty_set.time_factors(time_indices)
+        proposed_q: list[float] = []
+
+        for q_value, score, time_factor in zip(current_q, scaled_scores, time_factors):
+            gradient = -(score * time_factor) / max(q_value, self.config.epsilon) ** 2
+            proposed_q.append(q_value + self.config.adversary_step_size * gradient)
+
+        self._q_values = self.uncertainty_set.project(
+            proposed_q,
+            observation_rate,
+            time_indices,
+        )
+        return list(self._q_values)
+
+    def _needs_initialization(self, scores: list[float], time_indices: list[int]) -> bool:
+        return len(self._q_values) != len(scores) or len(time_indices) != len(scores)
