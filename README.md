@@ -107,3 +107,24 @@ If `label_observed` is omitted, the trainer assumes all labels are observed.
 - selective observation / non-ignorable missingness
 
 The long-term architecture is broader, but the current implemented HF method is intentionally narrow.
+
+## DSSAT-backed agriculture benchmark
+
+If `ag-survival-sim` is installed and DSSAT is available locally, you can run the current Iowa maize benchmark directly from this package:
+
+```bash
+minimax-ag-benchmark --trials 3 --train-paths 6 --test-paths 4 --horizon-years 4
+```
+
+That benchmark currently:
+
+- pulls DSSAT-backed trajectory data from `ag-survival-sim`
+- trains on selectively observed labels
+- evaluates on held-out latent outcomes
+- compares `ERM`, common reweighting baselines, `group_dro`, and the selective-observation minimax estimator
+
+Install helper dependency:
+
+```bash
+pip install ".[ag]"
+```

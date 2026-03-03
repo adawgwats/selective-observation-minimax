@@ -19,14 +19,21 @@ hf = [
   "torch>=2.2",
   "transformers>=4.40",
 ]
+ag = [
+  "ag-survival-sim @ git+https://github.com/adawgwats/ag-survival-sim.git",
+]
 
 [project.scripts]
 minimax-monte-carlo = "minimax_core.monte_carlo:main"
 minimax-gradient-validation = "minimax_core.gradient_validation:main"
 minimax-compare-baselines = "minimax_core.comparison:main"
+minimax-ag-benchmark = "minimax_core.ag_benchmark:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "integration: requires optional external packages or a real DSSAT installation",
+]
 
 [tool.setuptools.packages.find]
 include = ["minimax_core*", "minimax_hf*"]

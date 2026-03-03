@@ -8,3 +8,4 @@ dist/
 .venv/
 venv/
 tmc_cv.pdf
+dssat_runs/

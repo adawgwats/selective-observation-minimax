@@ -14,6 +14,8 @@ from .objectives import (
 from .uncertainty import ScoreBasedObservationSet, SelectiveObservationSet
 
 __all__ = [
+    "AgricultureBenchmarkConfig",
+    "AgricultureBenchmarkSummary",
     "BaselineComparisonConfig",
     "GradientTrialResult",
     "GradientValidationConfig",
@@ -33,10 +35,12 @@ __all__ = [
     "compute_score_based_weights",
     "empirical_risk",
     "estimate_group_snapshot",
+    "format_agriculture_benchmark_summary",
     "normalized_group_weights",
     "observed_empirical_risk",
     "robust_risk",
     "score_based_risk",
+    "run_agriculture_benchmark",
     "run_monte_carlo",
     "run_gradient_validation",
     "run_gradient_validation_suite",
@@ -49,6 +53,8 @@ __all__ = [
 
 def __getattr__(name: str):
     if name in {
+        "AgricultureBenchmarkConfig",
+        "AgricultureBenchmarkSummary",
         "BaselineComparisonConfig",
         "GradientTrialResult",
         "GradientValidationConfig",
@@ -58,6 +64,8 @@ def __getattr__(name: str):
         "MonteCarloSummary",
         "ScenarioComparisonSummary",
         "TrialResult",
+        "format_agriculture_benchmark_summary",
+        "run_agriculture_benchmark",
         "run_baseline_comparison",
         "run_baseline_comparison_suite",
         "run_gradient_validation",
@@ -65,6 +73,12 @@ def __getattr__(name: str):
         "run_monte_carlo",
         "run_validation_suite",
     }:
+        from .ag_benchmark import (
+            AgricultureBenchmarkConfig,
+            AgricultureBenchmarkSummary,
+            format_agriculture_benchmark_summary,
+            run_agriculture_benchmark,
+        )
         from .comparison import (
             BaselineComparisonConfig,
             MethodSummary,
@@ -88,13 +102,17 @@ def __getattr__(name: str):
         )
 
         mapping = {
+            "AgricultureBenchmarkConfig": AgricultureBenchmarkConfig,
+            "AgricultureBenchmarkSummary": AgricultureBenchmarkSummary,
             "BaselineComparisonConfig": BaselineComparisonConfig,
+            "format_agriculture_benchmark_summary": format_agriculture_benchmark_summary,
             "GradientTrialResult": GradientTrialResult,
             "GradientValidationConfig": GradientValidationConfig,
             "GradientValidationSummary": GradientValidationSummary,
             "MethodSummary": MethodSummary,
             "MonteCarloConfig": MonteCarloConfig,
             "MonteCarloSummary": MonteCarloSummary,
+            "run_agriculture_benchmark": run_agriculture_benchmark,
             "ScenarioComparisonSummary": ScenarioComparisonSummary,
             "TrialResult": TrialResult,
             "run_baseline_comparison": run_baseline_comparison,
