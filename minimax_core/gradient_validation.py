@@ -368,8 +368,7 @@ def generate_linear_dataset(
 
 
 def train_erm(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
-    observed_count = sum(1 for observed in dataset.train_observed_mask if observed)
+    parameters = [0.0 for _ in dataset.train_features[0]]
     weights = _normalize([1.0 if observed else 0.0 for observed in dataset.train_observed_mask])
     for _ in range(config.epochs):
         gradients = _weighted_gradient(parameters, dataset.train_features, dataset.train_labels, weights)
@@ -387,7 +386,7 @@ def train_robust(dataset: LinearDataset, config: GradientValidationConfig) -> li
 
 
 def train_robust_group(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     adversary = SelectiveObservationAdversary(config.q1)
     for _ in range(config.epochs):
         predictions = _predict(parameters, dataset.train_features)
@@ -413,7 +412,7 @@ def train_robust_group(dataset: LinearDataset, config: GradientValidationConfig)
 
 
 def train_robust_score(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     adversary = ScoreBasedObservationAdversary(config.q1)
     observation_rate = sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
 
@@ -443,7 +442,7 @@ def train_robust_score(dataset: LinearDataset, config: GradientValidationConfig)
 
 
 def train_oracle(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     weights = _normalize([1.0 for _ in dataset.train_labels])
     for _ in range(config.epochs):
         gradients = _weighted_gradient(parameters, dataset.train_features, dataset.train_labels, weights)

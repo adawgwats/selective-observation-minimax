@@ -131,7 +131,7 @@ def _fit_with_static_weights(
     learning_rate: float,
     epochs: int,
 ) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     normalized_weights = _normalize(weights)
     for _ in range(epochs):
         gradients = _weighted_gradient(
@@ -181,7 +181,7 @@ def train_group_prior_baseline(
 
 
 def train_focal_baseline(dataset: LinearDataset, config: BaselineComparisonConfig) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     base_mask = [1.0 if observed else 0.0 for observed in dataset.train_observed_mask]
 
     for _ in range(config.epochs):
@@ -212,7 +212,7 @@ def train_group_dro_baseline(
     dataset: LinearDataset,
     config: BaselineComparisonConfig,
 ) -> list[float]:
-    parameters = [0.0, 0.0, 0.0]
+    parameters = [0.0 for _ in dataset.train_features[0]]
     observed_groups = sorted(
         {
             group_id
