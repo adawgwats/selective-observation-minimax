@@ -107,6 +107,12 @@ class AgricultureMethodMetrics:
     test_rmse: float
     distressed_group_rmse: float
     stable_group_rmse: float
+    mean_survival_years: float
+    median_survival_years: float
+    bankruptcy_rate: float
+    mean_terminal_wealth: float
+    fifth_percentile_terminal_wealth: float
+    mean_cumulative_profit: float
 
 
 @dataclass(frozen=True)
@@ -115,9 +121,27 @@ class AgricultureMethodSummary:
     mean_test_rmse: float
     mean_distressed_group_rmse: float
     mean_stable_group_rmse: float
+    mean_survival_years: float
+    mean_median_survival_years: float
+    mean_bankruptcy_rate: float
+    mean_terminal_wealth: float
+    mean_fifth_percentile_terminal_wealth: float
+    mean_cumulative_profit: float
     mean_improvement_vs_erm: float
     mean_distressed_improvement_vs_erm: float
+    mean_survival_improvement_vs_erm: float
+    mean_bankruptcy_reduction_vs_erm: float
     win_rate_vs_erm: float
+
+
+@dataclass(frozen=True)
+class AgricultureReferencePolicySummary:
+    name: str
+    mean_survival_years: float
+    mean_bankruptcy_rate: float
+    mean_terminal_wealth: float
+    mean_fifth_percentile_terminal_wealth: float
+    mean_cumulative_profit: float
 
 
 @dataclass(frozen=True)
@@ -132,6 +156,7 @@ class AgricultureBenchmarkSummary:
     mean_stable_observation_rate: float
     mean_distressed_observation_rate: float
     methods: dict[str, AgricultureMethodSummary]
+    reference_policies: dict[str, AgricultureReferencePolicySummary] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -153,6 +178,25 @@ class _MemoizedCropModel:
                 scenario=scenario,
             )
         return self._cache[key]
+
+
+@dataclass(frozen=True)
+class _LinearPredictivePolicy:
+    parameters: list[float]
+    actions: tuple[Any, ...]
+
+    def choose_action(self, state: Any, scenario: Any) -> Any:
+        best_action = self.actions[0]
+        best_score = float("-inf")
+        for action in self.actions:
+            score = _dot_product(
+                self.parameters,
+                _featurize_decision(state=state, action=action, scenario=scenario),
+            )
+            if score > best_score:
+                best_score = score
+                best_action = action
+        return best_action
 
 
 @dataclass(frozen=True)
@@ -190,6 +234,7 @@ def _require_ag_survival_sim() -> dict[str, Any]:
             ScenarioGenerator,
             StaticPolicy,
             build_benchmark_crop_model,
+            evaluate_policies,
             generate_training_examples,
             get_benchmark_definition,
             list_benchmark_definitions,
@@ -209,6 +254,7 @@ def _require_ag_survival_sim() -> dict[str, Any]:
         "StaticPolicy": StaticPolicy,
         "FarmSimulator": FarmSimulator,
         "build_benchmark_crop_model": build_benchmark_crop_model,
+        "evaluate_policies": evaluate_policies,
         "generate_training_examples": generate_training_examples,
         "get_benchmark_definition": get_benchmark_definition,
         "list_benchmark_definitions": list_benchmark_definitions,
@@ -379,23 +425,58 @@ def _build_proxy_label(
     return global_proxy
 
 
-def _featurize_example(example: Any) -> list[float]:
+def _featurize_fields(
+    *,
+    cash: float,
+    debt: float,
+    credit_limit: float,
+    acres: float,
+    input_level: str,
+    weather_regime: str,
+) -> list[float]:
     return [
         1.0,
-        example.cash / 300_000.0,
-        example.debt / 200_000.0,
-        example.credit_limit / 200_000.0,
-        example.acres / 500.0,
-        1.0 if example.input_level == "medium" else 0.0,
-        1.0 if example.weather_regime == "good" else 0.0,
-        1.0 if example.weather_regime == "drought" else 0.0,
-        1.0 if example.farm_alive_next_year else 0.0,
+        cash / 300_000.0,
+        debt / 200_000.0,
+        credit_limit / 200_000.0,
+        acres / 500.0,
+        1.0 if input_level == "medium" else 0.0,
+        1.0 if weather_regime == "good" else 0.0,
+        1.0 if weather_regime == "drought" else 0.0,
     ]
+
+
+def _featurize_example(example: Any) -> list[float]:
+    return _featurize_fields(
+        cash=example.cash,
+        debt=example.debt,
+        credit_limit=example.credit_limit,
+        acres=example.acres,
+        input_level=example.input_level,
+        weather_regime=example.weather_regime,
+    )
+
+
+def _featurize_decision(*, state: Any, action: Any, scenario: Any) -> list[float]:
+    return _featurize_fields(
+        cash=state.cash,
+        debt=state.debt,
+        credit_limit=state.credit_limit,
+        acres=state.acres,
+        input_level=action.input_level,
+        weather_regime=scenario.weather_regime,
+    )
+
+
+def _dot_product(parameters: list[float], features: list[float]) -> float:
+    return sum(parameter * feature for parameter, feature in zip(parameters, features))
 
 
 def _evaluate_method(
     parameters: list[float],
     dataset: AgricultureDataset,
+    *,
+    policy_metrics: Any,
 ) -> AgricultureMethodMetrics:
     predictions = _predict(parameters, dataset.linear.test_features)
     labels = dataset.linear.test_labels
@@ -424,13 +505,78 @@ def _evaluate_method(
             if stable_labels
             else overall_rmse
         ),
+        mean_survival_years=policy_metrics.mean_survival_years,
+        median_survival_years=policy_metrics.median_survival_years,
+        bankruptcy_rate=policy_metrics.bankruptcy_rate,
+        mean_terminal_wealth=policy_metrics.mean_terminal_wealth,
+        fifth_percentile_terminal_wealth=policy_metrics.fifth_percentile_terminal_wealth,
+        mean_cumulative_profit=policy_metrics.mean_cumulative_profit,
     )
+
+
+def _run_policy_evaluation(
+    config: AgricultureBenchmarkConfig,
+    *,
+    trial_index: int,
+    method_parameters: dict[str, list[float]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    ag = _require_ag_survival_sim()
+    FarmState = ag["FarmState"]
+    ScenarioGenerator = ag["ScenarioGenerator"]
+    StaticPolicy = ag["StaticPolicy"]
+    FarmSimulator = ag["FarmSimulator"]
+    build_benchmark_crop_model = ag["build_benchmark_crop_model"]
+    evaluate_policies = ag["evaluate_policies"]
+    get_benchmark_definition = ag["get_benchmark_definition"]
+
+    benchmark = get_benchmark_definition(config.benchmark_name)
+    crop_model = build_benchmark_crop_model(
+        config.benchmark_name,
+        dssat_root=config.dssat_root,
+        workspace_root=str(
+            Path(config.workspace_root)
+            / f"{config.benchmark_name}_trial{trial_index}_policy_eval"
+        ),
+    )
+    simulator = FarmSimulator(crop_model=_MemoizedCropModel(crop_model))
+    initial_state = FarmState.initial(
+        cash=config.initial_cash,
+        debt=config.initial_debt,
+        credit_limit=config.initial_credit_limit,
+        acres=config.acres,
+    )
+    policies = {
+        method_name: _LinearPredictivePolicy(parameters=parameters, actions=benchmark.actions)
+        for method_name, parameters in method_parameters.items()
+    }
+    learned_summary = evaluate_policies(
+        simulator=simulator,
+        scenario_generator=ScenarioGenerator(seed=config.seed + 20_000 + trial_index),
+        policies=policies,
+        initial_state=initial_state,
+        horizon_years=config.horizon_years,
+        num_paths=config.test_paths,
+    )
+    reference_policies = {
+        f"static_{action.crop}_{action.input_level}": StaticPolicy(action)
+        for action in benchmark.actions
+    }
+    reference_summary = evaluate_policies(
+        simulator=simulator,
+        scenario_generator=ScenarioGenerator(seed=config.seed + 20_000 + trial_index),
+        policies=reference_policies,
+        initial_state=initial_state,
+        horizon_years=config.horizon_years,
+        num_paths=config.test_paths,
+    )
+    return learned_summary.metrics, reference_summary.metrics
 
 
 def run_agriculture_benchmark(
     config: AgricultureBenchmarkConfig,
 ) -> tuple[list[dict[str, AgricultureMethodMetrics]], AgricultureBenchmarkSummary]:
     per_trial_results: list[dict[str, AgricultureMethodMetrics]] = []
+    reference_policy_trials: dict[str, list[Any]] = {}
     observation_rates: list[float] = []
     stable_rates: list[float] = []
     distressed_rates: list[float] = []
@@ -475,14 +621,27 @@ def run_agriculture_benchmark(
                 robust_score_config,
             )
 
+        policy_metrics, reference_policy_metrics = _run_policy_evaluation(
+            config,
+            trial_index=trial_index,
+            method_parameters=method_parameters,
+        )
+        for policy_name, metrics in reference_policy_metrics.items():
+            reference_policy_trials.setdefault(policy_name, []).append(metrics)
+
         per_trial_results.append(
             {
-                name: _evaluate_method(parameters, dataset)
+                name: _evaluate_method(
+                    parameters,
+                    dataset,
+                    policy_metrics=policy_metrics[name],
+                )
                 for name, parameters in method_parameters.items()
             }
         )
 
     summaries: dict[str, AgricultureMethodSummary] = {}
+    reference_summaries: dict[str, AgricultureReferencePolicySummary] = {}
     available_methods = [
         name for name in AG_METHOD_ORDER if any(name in trial for trial in per_trial_results)
     ]
@@ -494,6 +653,14 @@ def run_agriculture_benchmark(
             mean_test_rmse=mean(metric.test_rmse for metric in method_trials),
             mean_distressed_group_rmse=mean(metric.distressed_group_rmse for metric in method_trials),
             mean_stable_group_rmse=mean(metric.stable_group_rmse for metric in method_trials),
+            mean_survival_years=mean(metric.mean_survival_years for metric in method_trials),
+            mean_median_survival_years=mean(metric.median_survival_years for metric in method_trials),
+            mean_bankruptcy_rate=mean(metric.bankruptcy_rate for metric in method_trials),
+            mean_terminal_wealth=mean(metric.mean_terminal_wealth for metric in method_trials),
+            mean_fifth_percentile_terminal_wealth=mean(
+                metric.fifth_percentile_terminal_wealth for metric in method_trials
+            ),
+            mean_cumulative_profit=mean(metric.mean_cumulative_profit for metric in method_trials),
             mean_improvement_vs_erm=mean(
                 erm_metric.test_rmse - metric.test_rmse
                 for erm_metric, metric in zip(erm_trials, method_trials)
@@ -502,10 +669,29 @@ def run_agriculture_benchmark(
                 erm_metric.distressed_group_rmse - metric.distressed_group_rmse
                 for erm_metric, metric in zip(erm_trials, method_trials)
             ),
+            mean_survival_improvement_vs_erm=mean(
+                metric.mean_survival_years - erm_metric.mean_survival_years
+                for erm_metric, metric in zip(erm_trials, method_trials)
+            ),
+            mean_bankruptcy_reduction_vs_erm=mean(
+                erm_metric.bankruptcy_rate - metric.bankruptcy_rate
+                for erm_metric, metric in zip(erm_trials, method_trials)
+            ),
             win_rate_vs_erm=sum(
                 1 for erm_metric, metric in zip(erm_trials, method_trials) if metric.test_rmse < erm_metric.test_rmse
             )
             / len(method_trials),
+        )
+    for policy_name, metrics_list in reference_policy_trials.items():
+        reference_summaries[policy_name] = AgricultureReferencePolicySummary(
+            name=policy_name,
+            mean_survival_years=mean(metric.mean_survival_years for metric in metrics_list),
+            mean_bankruptcy_rate=mean(metric.bankruptcy_rate for metric in metrics_list),
+            mean_terminal_wealth=mean(metric.mean_terminal_wealth for metric in metrics_list),
+            mean_fifth_percentile_terminal_wealth=mean(
+                metric.fifth_percentile_terminal_wealth for metric in metrics_list
+            ),
+            mean_cumulative_profit=mean(metric.mean_cumulative_profit for metric in metrics_list),
         )
 
     return per_trial_results, AgricultureBenchmarkSummary(
@@ -519,6 +705,7 @@ def run_agriculture_benchmark(
         mean_stable_observation_rate=mean(stable_rates),
         mean_distressed_observation_rate=mean(distressed_rates),
         methods=summaries,
+        reference_policies=reference_summaries,
     )
 
 
@@ -584,6 +771,7 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
         f"mean stable observation rate: {summary.mean_stable_observation_rate:.3f}",
         f"mean distressed observation rate: {summary.mean_distressed_observation_rate:.3f}",
         "",
+        "predictive fit",
         "method         overall_rmse  distressed_rmse  stable_rmse  improve_vs_erm  distressed_improve  win_rate",
         "-------------  ------------  ---------------  -----------  --------------  ------------------  --------",
     ]
@@ -598,9 +786,51 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
             f"  {method.mean_distressed_group_rmse:>15.2f}"
             f"  {method.mean_stable_group_rmse:>11.2f}"
             f"  {method.mean_improvement_vs_erm:>14.2f}"
-            f"  {method.mean_distressed_improvement_vs_erm:>18.2f}"
-            f"  {method.win_rate_vs_erm:>8.2f}"
+                f"  {method.mean_distressed_improvement_vs_erm:>18.2f}"
+                f"  {method.win_rate_vs_erm:>8.2f}"
         )
+    lines.extend(
+        [
+            "",
+            "downstream policy",
+            "method         mean_survival  median_survival  bankruptcy  mean_terminal_wealth  p05_terminal_wealth  mean_cum_profit  surv_vs_erm  bankr_reduct",
+            "-------------  -------------  ---------------  ----------  --------------------  -------------------  ---------------  -----------  ------------",
+        ]
+    )
+    for method_name in AG_METHOD_ORDER:
+        method = summary.methods.get(method_name)
+        if method is None:
+            continue
+        lines.append(
+            f"{method_name:<13}"
+            f"  {method.mean_survival_years:>13.2f}"
+            f"  {method.mean_median_survival_years:>15.2f}"
+            f"  {method.mean_bankruptcy_rate:>10.2%}"
+            f"  {method.mean_terminal_wealth:>20.2f}"
+            f"  {method.mean_fifth_percentile_terminal_wealth:>19.2f}"
+            f"  {method.mean_cumulative_profit:>15.2f}"
+            f"  {method.mean_survival_improvement_vs_erm:>11.2f}"
+            f"  {method.mean_bankruptcy_reduction_vs_erm:>12.2%}"
+        )
+    if summary.reference_policies:
+        lines.extend(
+            [
+                "",
+                "reference static policies",
+                "policy                    mean_survival  bankruptcy  mean_terminal_wealth  p05_terminal_wealth  mean_cum_profit",
+                "------------------------  -------------  ----------  --------------------  -------------------  ---------------",
+            ]
+        )
+        for policy_name in sorted(summary.reference_policies):
+            policy = summary.reference_policies[policy_name]
+            lines.append(
+                f"{policy_name:<24}"
+                f"  {policy.mean_survival_years:>13.2f}"
+                f"  {policy.mean_bankruptcy_rate:>10.2%}"
+                f"  {policy.mean_terminal_wealth:>20.2f}"
+                f"  {policy.mean_fifth_percentile_terminal_wealth:>19.2f}"
+                f"  {policy.mean_cumulative_profit:>15.2f}"
+            )
     return "\n".join(lines)
 
 

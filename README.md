@@ -182,6 +182,7 @@ That benchmark currently:
 - pulls DSSAT-backed trajectory data from `ag-survival-sim`
 - trains on selectively observed labels
 - evaluates on held-out latent outcomes
+- evaluates learned action-selection policies on paired DSSAT paths using survival, bankruptcy, and terminal-wealth metrics
 - compares `ERM`, common reweighting baselines, `group_dro`, and the selective-observation minimax estimator
 - supports the benchmark-ready DSSAT bundles currently exposed by `ag-survival-sim`
   - `iowa_maize`
@@ -208,6 +209,8 @@ To enable an explicit assumed observation-rate prior for the online MNAR baselin
 ```bash
 minimax-ag-benchmark --benchmark georgia_peanut --mnar-mode drop_unobserved --assumed-observation-rate 0.67
 ```
+
+The benchmark output now also includes static action references like `static_corn_low` and `static_corn_medium`. This makes it obvious when all learned estimators collapse to the same action policy even if their label-fit metrics differ.
 
 Install helper dependency:
 

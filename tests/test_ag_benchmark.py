@@ -6,6 +6,7 @@ import pytest
 
 from minimax_core.ag_benchmark import (
     AgricultureBenchmarkConfig,
+    AgricultureReferencePolicySummary,
     AgricultureBenchmarkSummary,
     AgricultureBenchmarkSuiteSummary,
     _build_proxy_label,
@@ -46,7 +47,7 @@ def test_featurize_example_encodes_finance_action_and_weather() -> None:
         )
     )
 
-    assert features == [1.0, 1.0, 0.5, 0.875, 1.0, 1.0, 0.0, 1.0, 0.0]
+    assert features == [1.0, 1.0, 0.5, 0.875, 1.0, 1.0, 0.0, 1.0]
 
 
 def test_missing_proxy_uses_group_mean_before_global_mean() -> None:
@@ -106,6 +107,7 @@ def test_format_suite_summary_includes_benchmark_headers() -> None:
                 mean_stable_observation_rate=0.9,
                 mean_distressed_observation_rate=0.2,
                 methods={},
+                reference_policies={},
             )
         }
     )
@@ -114,6 +116,38 @@ def test_format_suite_summary_includes_benchmark_headers() -> None:
 
     assert "[georgia_soybean]" in rendered
     assert "benchmark: georgia_soybean" in rendered
+
+
+def test_format_summary_includes_reference_static_policies() -> None:
+    summary = AgricultureBenchmarkSummary(
+        benchmark_name="iowa_maize",
+        target="net_income",
+        label_unit="USD",
+        trials=1,
+        train_count=10,
+        test_count=5,
+        mean_observation_rate=0.5,
+        mean_stable_observation_rate=0.9,
+        mean_distressed_observation_rate=0.2,
+        methods={},
+        reference_policies={
+            "static_corn_medium": AgricultureReferencePolicySummary(
+                name="static_corn_medium",
+                mean_survival_years=3.0,
+                mean_bankruptcy_rate=0.25,
+                mean_terminal_wealth=250000.0,
+                mean_fifth_percentile_terminal_wealth=100000.0,
+                mean_cumulative_profit=20000.0,
+            )
+        },
+    )
+
+    rendered = format_agriculture_benchmark_suite_summary(
+        AgricultureBenchmarkSuiteSummary(benchmarks={"iowa_maize": summary})
+    )
+
+    assert "reference static policies" in rendered
+    assert "static_corn_medium" in rendered
 
 
 @pytest.mark.integration
@@ -143,3 +177,5 @@ def test_real_agriculture_benchmark_runs_for_nondefault_benchmark(tmp_path) -> N
     assert summary.benchmark_name == "georgia_soybean"
     assert summary.methods["robust_group"].mean_test_rmse >= 0.0
     assert summary.methods["robust_group_online"].mean_test_rmse >= 0.0
+    assert summary.methods["robust_group"].mean_survival_years >= 0.0
+    assert 0.0 <= summary.methods["robust_group"].mean_bankruptcy_rate <= 1.0

@@ -25,6 +25,7 @@ from .uncertainty import ScoreBasedObservationSet, SelectiveObservationSet
 
 __all__ = [
     "AgricultureBenchmarkConfig",
+    "AgricultureReferencePolicySummary",
     "AgricultureBenchmarkSummary",
     "AgricultureBenchmarkSuiteSummary",
     "BaselineComparisonConfig",
@@ -77,6 +78,7 @@ __all__ = [
 def __getattr__(name: str):
     if name in {
         "AgricultureBenchmarkConfig",
+        "AgricultureReferencePolicySummary",
         "AgricultureBenchmarkSummary",
         "AgricultureBenchmarkSuiteSummary",
         "BaselineComparisonConfig",
@@ -103,6 +105,7 @@ def __getattr__(name: str):
     }:
         from .ag_benchmark import (
             AgricultureBenchmarkConfig,
+            AgricultureReferencePolicySummary,
             AgricultureBenchmarkSummary,
             AgricultureBenchmarkSuiteSummary,
             format_agriculture_benchmark_summary,
@@ -136,6 +139,7 @@ def __getattr__(name: str):
 
         mapping = {
             "AgricultureBenchmarkConfig": AgricultureBenchmarkConfig,
+            "AgricultureReferencePolicySummary": AgricultureReferencePolicySummary,
             "AgricultureBenchmarkSummary": AgricultureBenchmarkSummary,
             "AgricultureBenchmarkSuiteSummary": AgricultureBenchmarkSuiteSummary,
             "BaselineComparisonConfig": BaselineComparisonConfig,
