@@ -24,6 +24,7 @@ from .gradient_validation import (
     train_robust_group,
     train_robust_score,
 )
+from .mnar import MNAR_VIEW_MODES, SyntheticMNARConfig, apply_synthetic_mnar, build_proxy_labels
 
 
 AG_METHOD_ORDER = (
@@ -49,6 +50,10 @@ class AgricultureBenchmarkConfig:
     horizon_years: int = 4
     observation_seed: int = 7
     distressed_penalty: float = 0.6
+    mnar_mode: str = "explicit_missing"
+    base_observation_probability: float = 0.95
+    drought_penalty: float = 0.10
+    exit_penalty: float = 0.15
     learning_rate: float = 0.05
     epochs: int = 140
     workspace_root: str = "dssat_runs/minimax_ag"
@@ -74,6 +79,8 @@ class AgricultureBenchmarkConfig:
             raise ValueError("epochs must be positive.")
         if self.target not in {"yield", "net_income"}:
             raise ValueError("target must be 'yield' or 'net_income'.")
+        if self.mnar_mode not in MNAR_VIEW_MODES:
+            raise ValueError(f"mnar_mode must be one of {MNAR_VIEW_MODES}.")
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,9 @@ class AgricultureDataset:
     test_group_ids: list[str]
     label_scale: float
     label_unit: str
+    observation_rate: float
+    stable_observation_rate: float
+    distressed_observation_rate: float
     train_count: int
     test_count: int
 
@@ -139,14 +149,39 @@ class _MemoizedCropModel:
         return self._cache[key]
 
 
+@dataclass(frozen=True)
+class _FullObservationRecord:
+    observed_net_income: float
+    observed_yield_per_acre: float
+    observed_price: float
+    fully_observed: bool = True
+
+
+class _FullObservationProcess:
+    def apply(
+        self,
+        records: list[Any],
+        *,
+        path_index: int,
+    ) -> list[_FullObservationRecord]:
+        del path_index
+        return [
+            _FullObservationRecord(
+                observed_net_income=record.net_income,
+                observed_yield_per_acre=record.realized_yield_per_acre,
+                observed_price=record.realized_price,
+                fully_observed=True,
+            )
+            for record in records
+        ]
+
+
 def _require_ag_survival_sim() -> dict[str, Any]:
     try:
         from ag_survival_sim import (  # type: ignore[import-not-found]
             Action,
             FarmState,
-            ObservationProcess,
             ScenarioGenerator,
-            SelectiveObservationRule,
             StaticPolicy,
             build_benchmark_crop_model,
             generate_training_examples,
@@ -164,9 +199,7 @@ def _require_ag_survival_sim() -> dict[str, Any]:
     return {
         "Action": Action,
         "FarmState": FarmState,
-        "ObservationProcess": ObservationProcess,
         "ScenarioGenerator": ScenarioGenerator,
-        "SelectiveObservationRule": SelectiveObservationRule,
         "StaticPolicy": StaticPolicy,
         "FarmSimulator": FarmSimulator,
         "build_benchmark_crop_model": build_benchmark_crop_model,
@@ -189,9 +222,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     ag = _require_ag_survival_sim()
     Action = ag["Action"]
     FarmState = ag["FarmState"]
-    ObservationProcess = ag["ObservationProcess"]
     ScenarioGenerator = ag["ScenarioGenerator"]
-    SelectiveObservationRule = ag["SelectiveObservationRule"]
     StaticPolicy = ag["StaticPolicy"]
     FarmSimulator = ag["FarmSimulator"]
     build_benchmark_crop_model = ag["build_benchmark_crop_model"]
@@ -213,12 +244,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         credit_limit=config.initial_credit_limit,
         acres=config.acres,
     )
-    observation_process = ObservationProcess(
-        SelectiveObservationRule(
-            seed=config.observation_seed + trial_index,
-            distressed_penalty=config.distressed_penalty,
-        )
-    )
+    full_observation_process = _FullObservationProcess()
 
     policies = tuple(
         StaticPolicy(Action(action.crop, action.input_level))
@@ -233,7 +259,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
                 simulator=simulator,
                 scenario_generator=ScenarioGenerator(seed=config.seed + trial_index),
                 policy=policy,
-                observation_process=observation_process,
+                observation_process=full_observation_process,
                 initial_state=initial_state,
                 horizon_years=config.horizon_years,
                 num_paths=config.train_paths,
@@ -244,7 +270,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
                 simulator=simulator,
                 scenario_generator=ScenarioGenerator(seed=config.seed + 10_000 + trial_index),
                 policy=policy,
-                observation_process=observation_process,
+                observation_process=full_observation_process,
                 initial_state=initial_state,
                 horizon_years=config.horizon_years,
                 num_paths=config.test_paths,
@@ -253,69 +279,47 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
 
     label_scale = 100_000.0 if config.target == "net_income" else 1.0
     label_unit = "USD" if config.target == "net_income" else "bu/ac"
+    latent_train_features = [_featurize_example(example) for example in train_examples]
+    latent_train_labels = [_extract_label(example, config.target) / label_scale for example in train_examples]
+    latent_train_group_ids = [example.group_id for example in train_examples]
+    latent_train_path_indices = [int(example.path_index) for example in train_examples]
+    latent_train_step_indices = [int(example.step_index) for example in train_examples]
+    latent_train_weather_regimes = [str(example.weather_regime) for example in train_examples]
+    latent_train_alive_next = [bool(example.farm_alive_next_year) for example in train_examples]
 
-    observed_values = []
-    observed_by_group: dict[str, list[float]] = {"stable": [], "distressed": []}
-    train_features = []
-    train_labels = []
-    train_group_ids = []
-    train_observed_mask = []
+    mnar_result = apply_synthetic_mnar(
+        labels=latent_train_labels,
+        group_ids=latent_train_group_ids,
+        path_indices=latent_train_path_indices,
+        step_indices=latent_train_step_indices,
+        weather_regimes=latent_train_weather_regimes,
+        farm_alive_next_year=latent_train_alive_next,
+        config=SyntheticMNARConfig(
+            seed=config.observation_seed + trial_index,
+            view_mode=config.mnar_mode,
+            base_observation_probability=config.base_observation_probability,
+            distressed_penalty=config.distressed_penalty,
+            drought_penalty=config.drought_penalty,
+            exit_penalty=config.exit_penalty,
+        ),
+    )
 
-    for example in train_examples:
-        label = _extract_label(example, config.target) / label_scale
-        observed_label = _extract_observed_label(example, config.target)
-        train_features.append(_featurize_example(example))
-        train_labels.append(label)
-        train_group_ids.append(example.group_id)
-        train_observed_mask.append(example.label_observed)
-        if observed_label is not None:
-            scaled_observed = observed_label / label_scale
-            observed_values.append(scaled_observed)
-            observed_by_group.setdefault(example.group_id, []).append(scaled_observed)
-
-    global_proxy = mean(observed_values) if observed_values else 0.0
-    train_proxy_labels = [
-        _build_proxy_label(
-            label=_extract_observed_label(example, config.target),
-            group_id=example.group_id,
-            observed_by_group=observed_by_group,
-            global_proxy=global_proxy,
-            label_scale=label_scale,
-        )
-        for example in train_examples
-    ]
+    retained_indices = [index for index, keep in enumerate(mnar_result.keep_mask) if keep]
+    train_features = [latent_train_features[index] for index in retained_indices]
+    train_labels = [latent_train_labels[index] for index in retained_indices]
+    train_group_ids = [latent_train_group_ids[index] for index in retained_indices]
+    train_observed_mask = [mnar_result.observed_mask[index] for index in retained_indices]
+    train_observed_values = [mnar_result.observed_values[index] for index in retained_indices]
+    train_proxy_labels = build_proxy_labels(
+        observed_values=train_observed_values,
+        group_ids=train_group_ids,
+        observed_mask=train_observed_mask,
+        label_scale=1.0,
+    )
 
     test_features = [_featurize_example(example) for example in test_examples]
     test_labels = [_extract_label(example, config.target) / label_scale for example in test_examples]
     test_group_ids = [example.group_id for example in test_examples]
-
-    stable_examples = [example for example in train_examples if example.group_id == "stable"]
-    distressed_examples = [example for example in train_examples if example.group_id == "distressed"]
-    stable_observation_rate = (
-        sum(1 for example in stable_examples if example.label_observed) / len(stable_examples)
-        if stable_examples
-        else 1.0
-    )
-    distressed_observation_rate = (
-        sum(1 for example in distressed_examples if example.label_observed) / len(distressed_examples)
-        if distressed_examples
-        else 1.0
-    )
-
-    if stable_examples and not any(
-        observed for group, observed in zip(train_group_ids, train_observed_mask) if group == "stable"
-    ):
-        for index, group in enumerate(train_group_ids):
-            if group == "stable":
-                train_observed_mask[index] = True
-                break
-    if distressed_examples and not any(
-        observed for group, observed in zip(train_group_ids, train_observed_mask) if group == "distressed"
-    ):
-        for index, group in enumerate(train_group_ids):
-            if group == "distressed":
-                train_observed_mask[index] = True
-                break
 
     linear = LinearDataset(
         train_features=train_features,
@@ -325,14 +329,17 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         train_observed_mask=train_observed_mask,
         test_features=test_features,
         test_labels=test_labels,
-        stable_observation_probability=stable_observation_rate,
-        distressed_observation_probability=distressed_observation_rate,
+        stable_observation_probability=mnar_result.stable_observation_rate,
+        distressed_observation_probability=mnar_result.distressed_observation_rate,
     )
     return AgricultureDataset(
         linear=linear,
         test_group_ids=test_group_ids,
         label_scale=label_scale,
         label_unit=label_unit,
+        observation_rate=mnar_result.observation_rate,
+        stable_observation_rate=mnar_result.stable_observation_rate,
+        distressed_observation_rate=mnar_result.distressed_observation_rate,
         train_count=len(train_features),
         test_count=len(test_features),
     )
@@ -430,12 +437,9 @@ def run_agriculture_benchmark(
         label_unit = dataset.label_unit
         train_counts.append(dataset.train_count)
         test_counts.append(dataset.test_count)
-        observation_rates.append(
-            sum(1 for observed in dataset.linear.train_observed_mask if observed)
-            / len(dataset.linear.train_observed_mask)
-        )
-        stable_rates.append(dataset.linear.stable_observation_probability)
-        distressed_rates.append(dataset.linear.distressed_observation_probability)
+        observation_rates.append(dataset.observation_rate)
+        stable_rates.append(dataset.stable_observation_rate)
+        distressed_rates.append(dataset.distressed_observation_rate)
 
         baseline_config = _baseline_config_for_ag(config)
         robust_group_config = _robust_config_for_ag(config, adversary_mode="group")
@@ -609,7 +613,15 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--workspace-root", type=str, default=AgricultureBenchmarkConfig.workspace_root)
     parser.add_argument("--dssat-root", type=str, default=None)
     parser.add_argument("--target", choices=["yield", "net_income"], default=AgricultureBenchmarkConfig.target)
+    parser.add_argument("--mnar-mode", choices=MNAR_VIEW_MODES, default=AgricultureBenchmarkConfig.mnar_mode)
+    parser.add_argument(
+        "--base-observation-probability",
+        type=float,
+        default=AgricultureBenchmarkConfig.base_observation_probability,
+    )
     parser.add_argument("--distressed-penalty", type=float, default=AgricultureBenchmarkConfig.distressed_penalty)
+    parser.add_argument("--drought-penalty", type=float, default=AgricultureBenchmarkConfig.drought_penalty)
+    parser.add_argument("--exit-penalty", type=float, default=AgricultureBenchmarkConfig.exit_penalty)
     parser.add_argument("--q-min", type=float, default=Q1ObjectiveConfig.q_min)
     parser.add_argument("--q-max", type=float, default=Q1ObjectiveConfig.q_max)
     parser.add_argument("--adversary-step-size", type=float, default=Q1ObjectiveConfig.adversary_step_size)
@@ -624,7 +636,11 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
         train_paths=args.train_paths,
         test_paths=args.test_paths,
         horizon_years=args.horizon_years,
+        mnar_mode=args.mnar_mode,
+        base_observation_probability=args.base_observation_probability,
         distressed_penalty=args.distressed_penalty,
+        drought_penalty=args.drought_penalty,
+        exit_penalty=args.exit_penalty,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
         workspace_root=args.workspace_root,

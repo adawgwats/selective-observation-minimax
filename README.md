@@ -108,6 +108,21 @@ If `label_observed` is omitted, the trainer assumes all labels are observed.
 
 The long-term architecture is broader, but the current implemented HF method is intentionally narrow.
 
+## Synthetic MNAR tooling
+
+`minimax_core` now owns the reusable synthetic MNAR layer used by the agriculture benchmark.
+
+Supported training-view modes:
+
+- `explicit_missing`: keep rows in the dataset and mark labels as unobserved
+- `drop_unobserved`: remove unobserved rows entirely, which simulates hidden sample-selection bias
+- `truncate_after_unobserved`: drop the first unobserved row in a path and all later rows, which is a simple survivorship-bias / panel-attrition model
+
+This lets downstream benchmarks separate two cases cleanly:
+
+- MNAR is present and the learner is told which labels are missing
+- MNAR is present but the learner only sees the survivor-biased dataset
+
 ## DSSAT-backed agriculture benchmark
 
 If `ag-survival-sim` is installed and DSSAT is available locally, you can run the benchmark-ready DSSAT crop bundles directly from this package:
@@ -134,6 +149,12 @@ To run all currently benchmark-ready DSSAT bundles in sequence:
 
 ```bash
 minimax-ag-benchmark --all-benchmarks --trials 1 --train-paths 2 --test-paths 1 --horizon-years 2
+```
+
+To switch the agriculture benchmark into hidden sample-selection mode:
+
+```bash
+minimax-ag-benchmark --benchmark georgia_peanut --mnar-mode drop_unobserved
 ```
 
 Install helper dependency:

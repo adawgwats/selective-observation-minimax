@@ -1,6 +1,13 @@
 from .adversary import ScoreBasedObservationAdversary, SelectiveObservationAdversary
 from .config import Q1ObjectiveConfig
 from .metrics import normalized_group_weights, worst_group_loss
+from .mnar import (
+    MNAR_VIEW_MODES,
+    SyntheticMNARConfig,
+    SyntheticMNARResult,
+    apply_synthetic_mnar,
+    build_proxy_labels,
+)
 from .objectives import (
     GroupSnapshot,
     compute_example_weights,
@@ -23,6 +30,7 @@ __all__ = [
     "GradientValidationSummary",
     "GroupSnapshot",
     "MethodSummary",
+    "MNAR_VIEW_MODES",
     "MonteCarloConfig",
     "MonteCarloSummary",
     "Q1ObjectiveConfig",
@@ -31,7 +39,11 @@ __all__ = [
     "ScoreBasedObservationSet",
     "SelectiveObservationAdversary",
     "SelectiveObservationSet",
+    "SyntheticMNARConfig",
+    "SyntheticMNARResult",
     "TrialResult",
+    "apply_synthetic_mnar",
+    "build_proxy_labels",
     "compute_example_weights",
     "compute_score_based_weights",
     "empirical_risk",

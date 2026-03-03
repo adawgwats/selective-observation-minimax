@@ -117,7 +117,7 @@ def test_format_suite_summary_includes_benchmark_headers() -> None:
 
 
 @pytest.mark.integration
-def test_real_agriculture_benchmark_runs_for_nondefault_benchmark() -> None:
+def test_real_agriculture_benchmark_runs_for_nondefault_benchmark(tmp_path) -> None:
     try:
         import ag_survival_sim  # noqa: F401
     except ImportError:
@@ -132,7 +132,7 @@ def test_real_agriculture_benchmark_runs_for_nondefault_benchmark() -> None:
                 test_paths=1,
                 horizon_years=2,
                 epochs=80,
-                workspace_root="dssat_runs/test_minimax_ag",
+                workspace_root=str(tmp_path / "test_minimax_ag"),
             )
         )
     except FileNotFoundError:
