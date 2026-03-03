@@ -1,4 +1,5 @@
 from .adversary import (
+    KnightianObservationAdversary,
     ObservationAdversary,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
@@ -28,6 +29,8 @@ from .objectives import (
 )
 from .uncertainty import (
     GroupedObservationUncertaintySet,
+    HistoryAwareObservationUncertaintySet,
+    KnightianObservationSet,
     ObservationUncertaintySet,
     ScoreBasedObservationSet,
     ScoreObservationUncertaintySet,
@@ -46,6 +49,9 @@ __all__ = [
     "GradientValidationConfig",
     "GradientValidationSummary",
     "GroupSnapshot",
+    "HistoryAwareObservationUncertaintySet",
+    "KnightianObservationAdversary",
+    "KnightianObservationSet",
     "MethodSummary",
     "MNAR_VIEW_MODES",
     "MonteCarloConfig",
@@ -87,6 +93,7 @@ __all__ = [
     "run_gradient_validation",
     "run_gradient_validation_suite",
     "train_robust_group_online",
+    "train_robust_knightian",
     "train_robust_time_varying",
     "train_robust_score_online",
     "run_baseline_comparison",
@@ -120,6 +127,7 @@ def __getattr__(name: str):
         "run_gradient_validation",
         "run_gradient_validation_suite",
         "train_robust_group_online",
+        "train_robust_knightian",
         "train_robust_time_varying",
         "train_robust_score_online",
         "run_monte_carlo",
@@ -149,6 +157,7 @@ def __getattr__(name: str):
             run_gradient_validation,
             run_gradient_validation_suite,
             train_robust_group_online,
+            train_robust_knightian,
             train_robust_time_varying,
             train_robust_score_online,
         )
@@ -183,6 +192,7 @@ def __getattr__(name: str):
             "run_gradient_validation": run_gradient_validation,
             "run_gradient_validation_suite": run_gradient_validation_suite,
             "train_robust_group_online": train_robust_group_online,
+            "train_robust_knightian": train_robust_knightian,
             "train_robust_time_varying": train_robust_time_varying,
             "train_robust_score_online": train_robust_score_online,
             "run_monte_carlo": run_monte_carlo,

@@ -1,4 +1,4 @@
-from minimax_core import Q1ObjectiveConfig, TimeVaryingObservationSet
+from minimax_core import KnightianObservationSet, Q1ObjectiveConfig, TimeVaryingObservationSet
 from minimax_core.uncertainty import project_to_boxed_weighted_mean, weighted_mean
 
 
@@ -43,3 +43,19 @@ def test_time_varying_projection_preserves_temporal_weighted_mean() -> None:
 
     assert all(0.25 <= value <= 1.0 for value in projected)
     assert abs(weighted_mean(projected, weights) - 0.6) < 1e-8
+
+
+def test_knightian_projection_weights_increase_with_history() -> None:
+    uncertainty_set = KnightianObservationSet(
+        Q1ObjectiveConfig(q_min=0.25, q_max=1.0),
+        time_strength=0.4,
+        history_strength=1.0,
+    )
+
+    weights = uncertainty_set.projection_weights(
+        time_indices=[0, 1, 2, 3],
+        history_scores=[0.0, 0.0, 1.0, 2.0],
+    )
+
+    assert weights[0] > weights[-1]
+    assert all(0.2 <= weight <= 1.0 for weight in weights)

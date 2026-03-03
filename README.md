@@ -133,10 +133,13 @@ Available set families:
 - `SelectiveObservationSet`: grouped observation ambiguity, the current default
 - `ScoreBasedObservationSet`: per-example observation ambiguity from proxy scores
 - `TimeVaryingObservationSet`: a time-indexed extension where later observations can be given a different ambiguity budget than earlier ones
+- `KnightianObservationSet`: a history-aware extension where ambiguity can grow with both time and accumulated hidden/distress history
 
-The grouped and score adversaries currently drive the main benchmarks. The time-varying set is the first package-level seam for dynamic ambiguity over observation, which is the closest bridge to a Knightian extension in sequential settings.
+The grouped and score adversaries currently drive the main benchmarks. The time-varying and Knightian sets are the first package-level seams for dynamic ambiguity over observation, which is the closest bridge to a Christensen-plus-Knightian extension in sequential settings.
 
 The DSSAT benchmark also now includes a `robust_time_varying` baseline. It uses per-example time indices to let later observations carry a different ambiguity budget than earlier ones, which is useful when selection bias compounds over time.
+
+The benchmark now also includes `robust_knightian`, which adds a simple path-history score on top of the time index so later examples with more cumulative distress or hidden outcomes can be treated as more ambiguous during training.
 
 ## Synthetic MNAR tooling
 

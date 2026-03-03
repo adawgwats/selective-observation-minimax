@@ -1,4 +1,5 @@
 from minimax_core import (
+    KnightianObservationAdversary,
     Q1ObjectiveConfig,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
@@ -70,4 +71,19 @@ def test_time_varying_adversary_downweights_later_high_risk_examples_more() -> N
 
     assert updated_q[-1] < updated_q[0]
     assert updated_q[-1] < initial_q[-1]
+    assert abs(sum(weight * q for weight, q in zip(weights, updated_q)) / sum(weights) - observation_rate) < 1e-8
+
+
+def test_knightian_adversary_downweights_high_history_examples_more() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = KnightianObservationAdversary(config)
+    scores = [0.6, 0.6, 0.6, 0.6]
+    time_indices = [0, 1, 2, 3]
+    history_scores = [0.0, 0.0, 1.0, 2.0]
+    observation_rate = 0.6
+
+    updated_q = adversary.update(scores, observation_rate, time_indices, history_scores)
+    weights = adversary.uncertainty_set.projection_weights(time_indices, history_scores)
+
+    assert updated_q[-1] < updated_q[0]
     assert abs(sum(weight * q for weight, q in zip(weights, updated_q)) / sum(weights) - observation_rate) < 1e-8

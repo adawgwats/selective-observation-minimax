@@ -23,6 +23,7 @@ from .gradient_validation import (
     _predict,
     train_robust_group,
     train_robust_group_online,
+    train_robust_knightian,
     train_robust_score,
     train_robust_time_varying,
 )
@@ -39,6 +40,7 @@ AG_METHOD_ORDER = (
     "robust_group_online",
     "robust_score",
     "robust_time_varying",
+    "robust_knightian",
     "oracle",
 )
 
@@ -70,6 +72,7 @@ class AgricultureBenchmarkConfig:
     include_score_baseline: bool = True
     include_online_mnar_baseline: bool = True
     include_time_varying_baseline: bool = True
+    include_knightian_baseline: bool = True
     assumed_observation_rate: float | None = None
     q1: Q1ObjectiveConfig = field(default_factory=Q1ObjectiveConfig)
 
@@ -409,12 +412,19 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     )
 
     retained_indices = [index for index, keep in enumerate(mnar_result.keep_mask) if keep]
+    latent_history_scores = _build_history_scores(
+        path_indices=latent_train_path_indices,
+        step_indices=latent_train_step_indices,
+        group_ids=latent_train_group_ids,
+        observed_mask=list(mnar_result.observed_mask),
+    )
     train_features = [latent_train_features[index] for index in retained_indices]
     train_labels = [latent_train_labels[index] for index in retained_indices]
     train_group_ids = [latent_train_group_ids[index] for index in retained_indices]
     train_observed_mask = [mnar_result.observed_mask[index] for index in retained_indices]
     train_observed_values = [mnar_result.observed_values[index] for index in retained_indices]
     train_time_indices = [latent_train_step_indices[index] for index in retained_indices]
+    train_history_scores = [latent_history_scores[index] for index in retained_indices]
     train_proxy_labels = build_proxy_labels(
         observed_values=train_observed_values,
         group_ids=train_group_ids,
@@ -436,6 +446,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         train_group_ids=train_group_ids,
         train_observed_mask=train_observed_mask,
         train_time_indices=train_time_indices,
+        train_history_scores=train_history_scores,
         test_features=test_features,
         test_labels=test_labels,
         stable_observation_probability=mnar_result.stable_observation_rate,
@@ -510,6 +521,31 @@ def _build_proxy_label(
     if group_values:
         return mean(group_values)
     return global_proxy
+
+
+def _build_history_scores(
+    *,
+    path_indices: list[int],
+    step_indices: list[int],
+    group_ids: list[str],
+    observed_mask: list[bool],
+) -> list[float]:
+    by_path: dict[int, list[int]] = {}
+    for index, path_index in enumerate(path_indices):
+        by_path.setdefault(int(path_index), []).append(index)
+
+    history_scores = [0.0 for _ in path_indices]
+    for indices in by_path.values():
+        ordered = sorted(indices, key=lambda idx: int(step_indices[idx]))
+        cumulative_distress = 0.0
+        cumulative_hidden = 0.0
+        for index in ordered:
+            history_scores[index] = cumulative_distress + cumulative_hidden
+            if group_ids[index] == "distressed":
+                cumulative_distress += 1.0
+            if not observed_mask[index]:
+                cumulative_hidden += 1.0
+    return history_scores
 
 
 def _featurize_fields(
@@ -771,6 +807,7 @@ def run_agriculture_benchmark(
         )
         robust_score_config = _robust_config_for_ag(config, adversary_mode="score")
         robust_time_varying_config = _robust_config_for_ag(config, adversary_mode="time_varying")
+        robust_knightian_config = _robust_config_for_ag(config, adversary_mode="knightian")
 
         method_parameters: dict[str, list[float]] = {
             "erm": train_erm_baseline(dataset.linear, baseline_config),
@@ -795,6 +832,11 @@ def run_agriculture_benchmark(
             method_parameters["robust_time_varying"] = train_robust_time_varying(
                 dataset.linear,
                 robust_time_varying_config,
+            )
+        if config.include_knightian_baseline:
+            method_parameters["robust_knightian"] = train_robust_knightian(
+                dataset.linear,
+                robust_knightian_config,
             )
 
         learned_summary, reference_summary = _run_policy_evaluation(
@@ -1135,6 +1177,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--exclude-score-baseline", action="store_true")
     parser.add_argument("--exclude-online-mnar-baseline", action="store_true")
     parser.add_argument("--exclude-time-varying-baseline", action="store_true")
+    parser.add_argument("--exclude-knightian-baseline", action="store_true")
     parser.add_argument("--assumed-observation-rate", type=float, default=None)
     parser.add_argument("--all-benchmarks", action="store_true")
     args = parser.parse_args(argv)
@@ -1163,6 +1206,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
         include_score_baseline=not args.exclude_score_baseline,
         include_online_mnar_baseline=not args.exclude_online_mnar_baseline,
         include_time_varying_baseline=not args.exclude_time_varying_baseline,
+        include_knightian_baseline=not args.exclude_knightian_baseline,
         assumed_observation_rate=args.assumed_observation_rate,
         q1=Q1ObjectiveConfig(
             q_min=args.q_min,

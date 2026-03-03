@@ -16,6 +16,7 @@ from minimax_core.gradient_validation import (
     train_erm,
     train_robust_group,
     train_robust_group_online,
+    train_robust_knightian,
     train_robust_time_varying,
 )
 
@@ -84,6 +85,7 @@ def test_online_mnar_group_training_improves_after_hidden_row_drops() -> None:
         train_group_ids=[dataset.train_group_ids[index] for index in retained_indices],
         train_observed_mask=[True for _ in retained_indices],
         train_time_indices=[dataset.train_time_indices[index] for index in retained_indices],
+        train_history_scores=[dataset.train_history_scores[index] for index in retained_indices],
         test_features=dataset.test_features,
         test_labels=dataset.test_labels,
         stable_observation_probability=dataset.stable_observation_probability,
@@ -126,6 +128,7 @@ def test_time_varying_training_improves_with_later_hidden_risk() -> None:
         train_group_ids=["stable", "stable", "distressed", "distressed"],
         train_observed_mask=[True, True, True, False],
         train_time_indices=[0, 1, 2, 3],
+        train_history_scores=[0.0, 0.0, 1.0, 2.0],
         test_features=[[1.0, 0.1], [1.0, 0.9]],
         test_labels=[0.25, 1.3],
         stable_observation_probability=1.0,
@@ -145,3 +148,33 @@ def test_time_varying_training_improves_with_later_hidden_risk() -> None:
     time_mse = _mse(_predict(time_parameters, dataset.test_features), dataset.test_labels)
 
     assert time_mse < erm_mse
+
+
+def test_knightian_training_improves_with_compounding_history() -> None:
+    dataset = LinearDataset(
+        train_features=[[1.0, 0.0], [1.0, 0.2], [1.0, 0.8], [1.0, 1.0]],
+        train_labels=[0.2, 0.3, 1.2, 1.4],
+        train_proxy_labels=[0.2, 0.3, 1.2, 1.4],
+        train_group_ids=["stable", "stable", "distressed", "distressed"],
+        train_observed_mask=[True, True, True, False],
+        train_time_indices=[0, 1, 2, 3],
+        train_history_scores=[0.0, 0.0, 1.0, 2.0],
+        test_features=[[1.0, 0.1], [1.0, 0.9]],
+        test_labels=[0.25, 1.3],
+        stable_observation_probability=1.0,
+        distressed_observation_probability=0.5,
+    )
+    config = GradientValidationConfig(
+        seed=53,
+        epochs=120,
+        learning_rate=0.05,
+        adversary_mode="knightian",
+    )
+
+    erm_parameters = train_erm(dataset, config)
+    knightian_parameters = train_robust_knightian(dataset, config)
+
+    erm_mse = _mse(_predict(erm_parameters, dataset.test_features), dataset.test_labels)
+    knightian_mse = _mse(_predict(knightian_parameters, dataset.test_features), dataset.test_labels)
+
+    assert knightian_mse < erm_mse

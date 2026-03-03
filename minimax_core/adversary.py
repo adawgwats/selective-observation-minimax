@@ -8,6 +8,8 @@ from .config import Q1ObjectiveConfig
 from .objectives import GroupSnapshot
 from .uncertainty import (
     GroupedObservationUncertaintySet,
+    HistoryAwareObservationUncertaintySet,
+    KnightianObservationSet,
     ScoreBasedObservationSet,
     ScoreObservationUncertaintySet,
     SelectiveObservationSet,
@@ -170,3 +172,66 @@ class TimeVaryingObservationAdversary(ObservationAdversary):
 
     def _needs_initialization(self, scores: list[float], time_indices: list[int]) -> bool:
         return len(self._q_values) != len(scores) or len(time_indices) != len(scores)
+
+
+@dataclass
+class KnightianObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: HistoryAwareObservationUncertaintySet | None = None
+    _q_values: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.uncertainty_set is None:
+            self.uncertainty_set = KnightianObservationSet(self.config)
+
+    def current_q(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> list[float]:
+        if self._needs_initialization(scores, time_indices, history_scores):
+            self._q_values = self.uncertainty_set.initialize(
+                len(scores),
+                observation_rate,
+                time_indices,
+                history_scores,
+            )
+        return list(self._q_values)
+
+    def update(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> list[float]:
+        current_q = self.current_q(scores, observation_rate, time_indices, history_scores)
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        ambiguity_factors = self.uncertainty_set.ambiguity_factors(time_indices, history_scores)
+        proposed_q: list[float] = []
+
+        for q_value, score, ambiguity_factor in zip(current_q, scaled_scores, ambiguity_factors):
+            gradient = -(score * ambiguity_factor) / max(q_value, self.config.epsilon) ** 2
+            proposed_q.append(q_value + self.config.adversary_step_size * gradient)
+
+        self._q_values = self.uncertainty_set.project(
+            proposed_q,
+            observation_rate,
+            time_indices,
+            history_scores,
+        )
+        return list(self._q_values)
+
+    def _needs_initialization(
+        self,
+        scores: list[float],
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> bool:
+        return (
+            len(self._q_values) != len(scores)
+            or len(time_indices) != len(scores)
+            or len(history_scores) != len(scores)
+        )
