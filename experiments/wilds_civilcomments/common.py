@@ -34,6 +34,12 @@ class CivilCommentsExperimentConfig:
     num_train_epochs: int = 3
     seed: int = 17
     download: bool = True
+    train_fraction: float = 1.0
+    val_fraction: float = 1.0
+    test_fraction: float = 1.0
+    max_train_examples: int | None = None
+    max_val_examples: int | None = None
+    max_test_examples: int | None = None
     explicit_mnar: bool = False
     base_observation_rate: float = 0.95
     toxic_penalty: float = 0.20
@@ -54,6 +60,20 @@ class CivilCommentsExperimentConfig:
             raise ValueError("weight_decay must be non-negative.")
         if self.num_train_epochs <= 0:
             raise ValueError("num_train_epochs must be positive.")
+        for name, value in (
+            ("train_fraction", self.train_fraction),
+            ("val_fraction", self.val_fraction),
+            ("test_fraction", self.test_fraction),
+        ):
+            if not 0.0 < value <= 1.0:
+                raise ValueError(f"{name} must be in (0, 1].")
+        for name, value in (
+            ("max_train_examples", self.max_train_examples),
+            ("max_val_examples", self.max_val_examples),
+            ("max_test_examples", self.max_test_examples),
+        ):
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive when provided.")
         if not 0.0 < self.base_observation_rate <= 1.0:
             raise ValueError("base_observation_rate must be in (0, 1].")
         if not 0.0 < self.min_observation_rate <= 1.0:

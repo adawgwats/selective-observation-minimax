@@ -22,6 +22,7 @@ hf = [
 wilds = [
   "accelerate>=0.28",
   "datasets>=2.18",
+  "pandas<3",
   "pyyaml>=6.0",
   "scikit-learn>=1.4",
   "torch>=2.2",

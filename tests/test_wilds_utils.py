@@ -1,7 +1,10 @@
+import json
+
 from experiments.wilds_civilcomments.common import (
     CivilCommentsExperimentConfig,
     NON_IDENTITY_GROUP,
     build_observed_mask,
+    load_experiment_config,
     extract_training_group_memberships,
     metadata_row_to_dict,
     summarize_memberships,
@@ -124,3 +127,25 @@ def test_build_observed_mask_preserves_group_coverage_after_sampling() -> None:
 
     assert summary["female"]["observed"] >= 1
     assert summary["black"]["observed"] >= 1
+
+
+def test_load_experiment_config_supports_json(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "method": "robust_group",
+                "explicit_mnar": True,
+                "seed": 19,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_experiment_config(config_path)
+
+    assert config == CivilCommentsExperimentConfig(
+        method="robust_group",
+        explicit_mnar=True,
+        seed=19,
+    )
