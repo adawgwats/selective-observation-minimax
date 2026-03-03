@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
@@ -39,6 +40,8 @@ AG_METHOD_ORDER = (
 
 @dataclass(frozen=True)
 class AgricultureBenchmarkConfig:
+    benchmark_name: str = "iowa_maize"
+    all_benchmarks: bool = False
     seed: int = 31
     trials: int = 3
     train_paths: int = 6
@@ -48,7 +51,7 @@ class AgricultureBenchmarkConfig:
     distressed_penalty: float = 0.6
     learning_rate: float = 0.05
     epochs: int = 140
-    workspace_root: str = "dssat_runs/minimax_iowa_maize"
+    workspace_root: str = "dssat_runs/minimax_ag"
     dssat_root: str | None = None
     initial_cash: float = 300_000.0
     initial_debt: float = 100_000.0
@@ -103,6 +106,7 @@ class AgricultureMethodSummary:
 
 @dataclass(frozen=True)
 class AgricultureBenchmarkSummary:
+    benchmark_name: str
     target: str
     label_unit: str
     trials: int
@@ -112,6 +116,11 @@ class AgricultureBenchmarkSummary:
     mean_stable_observation_rate: float
     mean_distressed_observation_rate: float
     methods: dict[str, AgricultureMethodSummary]
+
+
+@dataclass(frozen=True)
+class AgricultureBenchmarkSuiteSummary:
+    benchmarks: dict[str, AgricultureBenchmarkSummary]
 
 
 class _MemoizedCropModel:
@@ -139,8 +148,10 @@ def _require_ag_survival_sim() -> dict[str, Any]:
             ScenarioGenerator,
             SelectiveObservationRule,
             StaticPolicy,
-            build_iowa_maize_crop_model,
+            build_benchmark_crop_model,
             generate_training_examples,
+            get_benchmark_definition,
+            list_benchmark_definitions,
         )
         from ag_survival_sim.simulator import FarmSimulator  # type: ignore[import-not-found]
     except ImportError as error:
@@ -158,9 +169,20 @@ def _require_ag_survival_sim() -> dict[str, Any]:
         "SelectiveObservationRule": SelectiveObservationRule,
         "StaticPolicy": StaticPolicy,
         "FarmSimulator": FarmSimulator,
-        "build_iowa_maize_crop_model": build_iowa_maize_crop_model,
+        "build_benchmark_crop_model": build_benchmark_crop_model,
         "generate_training_examples": generate_training_examples,
+        "get_benchmark_definition": get_benchmark_definition,
+        "list_benchmark_definitions": list_benchmark_definitions,
     }
+
+
+def _available_benchmark_names() -> tuple[str, ...]:
+    try:
+        ag = _require_ag_survival_sim()
+    except ImportError:
+        return ("iowa_maize",)
+
+    return tuple(definition.name for definition in ag["list_benchmark_definitions"]())
 
 
 def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_index: int) -> AgricultureDataset:
@@ -172,12 +194,17 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     SelectiveObservationRule = ag["SelectiveObservationRule"]
     StaticPolicy = ag["StaticPolicy"]
     FarmSimulator = ag["FarmSimulator"]
-    build_iowa_maize_crop_model = ag["build_iowa_maize_crop_model"]
+    build_benchmark_crop_model = ag["build_benchmark_crop_model"]
     generate_training_examples = ag["generate_training_examples"]
+    get_benchmark_definition = ag["get_benchmark_definition"]
 
-    crop_model = build_iowa_maize_crop_model(
+    benchmark = get_benchmark_definition(config.benchmark_name)
+    crop_model = build_benchmark_crop_model(
+        config.benchmark_name,
         dssat_root=config.dssat_root,
-        workspace_root=f"{config.workspace_root}_trial{trial_index}",
+        workspace_root=str(
+            Path(config.workspace_root) / f"{config.benchmark_name}_trial{trial_index}"
+        ),
     )
     simulator = FarmSimulator(crop_model=_MemoizedCropModel(crop_model))
     initial_state = FarmState.initial(
@@ -193,9 +220,9 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         )
     )
 
-    policies = (
-        StaticPolicy(Action("corn", "low")),
-        StaticPolicy(Action("corn", "medium")),
+    policies = tuple(
+        StaticPolicy(Action(action.crop, action.input_level))
+        for action in benchmark.actions
     )
 
     train_examples = []
@@ -361,6 +388,7 @@ def _evaluate_method(
     labels = dataset.linear.test_labels
     groups = dataset.test_group_ids
     scale = dataset.label_scale
+    overall_rmse = math.sqrt(_mse(predictions, labels)) * scale
 
     distressed_labels = [label for label, group in zip(labels, groups) if group == "distressed"]
     distressed_predictions = [
@@ -372,9 +400,17 @@ def _evaluate_method(
     ]
 
     return AgricultureMethodMetrics(
-        test_rmse=math.sqrt(_mse(predictions, labels)) * scale,
-        distressed_group_rmse=math.sqrt(_mse(distressed_predictions, distressed_labels)) * scale,
-        stable_group_rmse=math.sqrt(_mse(stable_predictions, stable_labels)) * scale,
+        test_rmse=overall_rmse,
+        distressed_group_rmse=(
+            math.sqrt(_mse(distressed_predictions, distressed_labels)) * scale
+            if distressed_labels
+            else overall_rmse
+        ),
+        stable_group_rmse=(
+            math.sqrt(_mse(stable_predictions, stable_labels)) * scale
+            if stable_labels
+            else overall_rmse
+        ),
     )
 
 
@@ -454,6 +490,7 @@ def run_agriculture_benchmark(
         )
 
     return per_trial_results, AgricultureBenchmarkSummary(
+        benchmark_name=config.benchmark_name,
         target=config.target,
         label_unit=label_unit,
         trials=config.trials,
@@ -464,6 +501,22 @@ def run_agriculture_benchmark(
         mean_distressed_observation_rate=mean(distressed_rates),
         methods=summaries,
     )
+
+
+def run_agriculture_benchmark_suite(
+    config: AgricultureBenchmarkConfig,
+    *,
+    benchmark_names: list[str] | tuple[str, ...] | None = None,
+) -> AgricultureBenchmarkSuiteSummary:
+    selected_names = tuple(benchmark_names or _available_benchmark_names())
+    summaries: dict[str, AgricultureBenchmarkSummary] = {}
+
+    for benchmark_name in selected_names:
+        benchmark_config = replace(config, benchmark_name=benchmark_name)
+        _trial_results, summary = run_agriculture_benchmark(benchmark_config)
+        summaries[benchmark_name] = summary
+
+    return AgricultureBenchmarkSuiteSummary(benchmarks=summaries)
 
 
 def _baseline_config_for_ag(config: AgricultureBenchmarkConfig):
@@ -497,6 +550,7 @@ def _robust_config_for_ag(
 def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -> str:
     lines = [
         "DSSAT-backed agriculture benchmark summary",
+        f"benchmark: {summary.benchmark_name}",
         f"target: {summary.target} ({summary.label_unit})",
         f"trials: {summary.trials}",
         f"mean train examples: {summary.train_count}",
@@ -525,9 +579,25 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
     return "\n".join(lines)
 
 
+def format_agriculture_benchmark_suite_summary(
+    summary: AgricultureBenchmarkSuiteSummary,
+) -> str:
+    lines = ["DSSAT-backed agriculture benchmark suite"]
+    for benchmark_name, benchmark_summary in summary.benchmarks.items():
+        lines.append("")
+        lines.append(f"[{benchmark_name}]")
+        lines.append(format_agriculture_benchmark_summary(benchmark_summary))
+    return "\n".join(lines)
+
+
 def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser = argparse.ArgumentParser(
         description="Run a DSSAT-backed agriculture benchmark against minimax baselines."
+    )
+    parser.add_argument(
+        "--benchmark",
+        choices=_available_benchmark_names(),
+        default=AgricultureBenchmarkConfig.benchmark_name,
     )
     parser.add_argument("--seed", type=int, default=AgricultureBenchmarkConfig.seed)
     parser.add_argument("--trials", type=int, default=AgricultureBenchmarkConfig.trials)
@@ -544,8 +614,11 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--q-max", type=float, default=Q1ObjectiveConfig.q_max)
     parser.add_argument("--adversary-step-size", type=float, default=Q1ObjectiveConfig.adversary_step_size)
     parser.add_argument("--exclude-score-baseline", action="store_true")
+    parser.add_argument("--all-benchmarks", action="store_true")
     args = parser.parse_args(argv)
     return AgricultureBenchmarkConfig(
+        benchmark_name=args.benchmark,
+        all_benchmarks=args.all_benchmarks,
         seed=args.seed,
         trials=args.trials,
         train_paths=args.train_paths,
@@ -568,6 +641,11 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
 
 def main(argv: list[str] | None = None) -> None:
     config = parse_args(argv)
+    if config.all_benchmarks:
+        suite_summary = run_agriculture_benchmark_suite(config)
+        print(format_agriculture_benchmark_suite_summary(suite_summary))
+        return
+
     _trials, summary = run_agriculture_benchmark(config)
     print(format_agriculture_benchmark_summary(summary))
 

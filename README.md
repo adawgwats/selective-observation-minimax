@@ -110,10 +110,10 @@ The long-term architecture is broader, but the current implemented HF method is 
 
 ## DSSAT-backed agriculture benchmark
 
-If `ag-survival-sim` is installed and DSSAT is available locally, you can run the current Iowa maize benchmark directly from this package:
+If `ag-survival-sim` is installed and DSSAT is available locally, you can run the benchmark-ready DSSAT crop bundles directly from this package:
 
 ```bash
-minimax-ag-benchmark --trials 3 --train-paths 6 --test-paths 4 --horizon-years 4
+minimax-ag-benchmark --benchmark georgia_soybean --trials 3 --train-paths 6 --test-paths 4 --horizon-years 4
 ```
 
 That benchmark currently:
@@ -122,6 +122,13 @@ That benchmark currently:
 - trains on selectively observed labels
 - evaluates on held-out latent outcomes
 - compares `ERM`, common reweighting baselines, `group_dro`, and the selective-observation minimax estimator
+- supports the benchmark-ready DSSAT bundles currently exposed by `ag-survival-sim`
+
+To run all currently benchmark-ready DSSAT bundles in sequence:
+
+```bash
+minimax-ag-benchmark --all-benchmarks --trials 1 --train-paths 2 --test-paths 1 --horizon-years 2
+```
 
 Install helper dependency:
 
