@@ -136,6 +136,8 @@ Available set families:
 
 The grouped and score adversaries currently drive the main benchmarks. The time-varying set is the first package-level seam for dynamic ambiguity over observation, which is the closest bridge to a Knightian extension in sequential settings.
 
+The DSSAT benchmark also now includes a `robust_time_varying` baseline. It uses per-example time indices to let later observations carry a different ambiguity budget than earlier ones, which is useful when selection bias compounds over time.
+
 ## Synthetic MNAR tooling
 
 `minimax_core` now owns the reusable synthetic MNAR layer used by the agriculture benchmark.

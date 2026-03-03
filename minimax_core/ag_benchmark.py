@@ -24,6 +24,7 @@ from .gradient_validation import (
     train_robust_group,
     train_robust_group_online,
     train_robust_score,
+    train_robust_time_varying,
 )
 from .mnar import MNAR_VIEW_MODES, SyntheticMNARConfig, apply_synthetic_mnar, build_proxy_labels
 
@@ -37,6 +38,7 @@ AG_METHOD_ORDER = (
     "robust_group",
     "robust_group_online",
     "robust_score",
+    "robust_time_varying",
     "oracle",
 )
 
@@ -67,6 +69,7 @@ class AgricultureBenchmarkConfig:
     target: str = "net_income"
     include_score_baseline: bool = True
     include_online_mnar_baseline: bool = True
+    include_time_varying_baseline: bool = True
     assumed_observation_rate: float | None = None
     q1: Q1ObjectiveConfig = field(default_factory=Q1ObjectiveConfig)
 
@@ -411,6 +414,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     train_group_ids = [latent_train_group_ids[index] for index in retained_indices]
     train_observed_mask = [mnar_result.observed_mask[index] for index in retained_indices]
     train_observed_values = [mnar_result.observed_values[index] for index in retained_indices]
+    train_time_indices = [latent_train_step_indices[index] for index in retained_indices]
     train_proxy_labels = build_proxy_labels(
         observed_values=train_observed_values,
         group_ids=train_group_ids,
@@ -431,6 +435,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         train_proxy_labels=train_proxy_labels,
         train_group_ids=train_group_ids,
         train_observed_mask=train_observed_mask,
+        train_time_indices=train_time_indices,
         test_features=test_features,
         test_labels=test_labels,
         stable_observation_probability=mnar_result.stable_observation_rate,
@@ -765,6 +770,7 @@ def run_agriculture_benchmark(
             dataset_observation_rate=dataset.observation_rate,
         )
         robust_score_config = _robust_config_for_ag(config, adversary_mode="score")
+        robust_time_varying_config = _robust_config_for_ag(config, adversary_mode="time_varying")
 
         method_parameters: dict[str, list[float]] = {
             "erm": train_erm_baseline(dataset.linear, baseline_config),
@@ -784,6 +790,11 @@ def run_agriculture_benchmark(
             method_parameters["robust_score"] = train_robust_score(
                 dataset.linear,
                 robust_score_config,
+            )
+        if config.include_time_varying_baseline:
+            method_parameters["robust_time_varying"] = train_robust_time_varying(
+                dataset.linear,
+                robust_time_varying_config,
             )
 
         learned_summary, reference_summary = _run_policy_evaluation(
@@ -1123,6 +1134,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--adversary-step-size", type=float, default=Q1ObjectiveConfig.adversary_step_size)
     parser.add_argument("--exclude-score-baseline", action="store_true")
     parser.add_argument("--exclude-online-mnar-baseline", action="store_true")
+    parser.add_argument("--exclude-time-varying-baseline", action="store_true")
     parser.add_argument("--assumed-observation-rate", type=float, default=None)
     parser.add_argument("--all-benchmarks", action="store_true")
     args = parser.parse_args(argv)
@@ -1150,6 +1162,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
         target=args.target,
         include_score_baseline=not args.exclude_score_baseline,
         include_online_mnar_baseline=not args.exclude_online_mnar_baseline,
+        include_time_varying_baseline=not args.exclude_time_varying_baseline,
         assumed_observation_rate=args.assumed_observation_rate,
         q1=Q1ObjectiveConfig(
             q_min=args.q_min,

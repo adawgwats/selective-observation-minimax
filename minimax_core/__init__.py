@@ -87,6 +87,7 @@ __all__ = [
     "run_gradient_validation",
     "run_gradient_validation_suite",
     "train_robust_group_online",
+    "train_robust_time_varying",
     "train_robust_score_online",
     "run_baseline_comparison",
     "run_baseline_comparison_suite",
@@ -119,6 +120,7 @@ def __getattr__(name: str):
         "run_gradient_validation",
         "run_gradient_validation_suite",
         "train_robust_group_online",
+        "train_robust_time_varying",
         "train_robust_score_online",
         "run_monte_carlo",
         "run_validation_suite",
@@ -147,6 +149,7 @@ def __getattr__(name: str):
             run_gradient_validation,
             run_gradient_validation_suite,
             train_robust_group_online,
+            train_robust_time_varying,
             train_robust_score_online,
         )
         from .monte_carlo import (
@@ -180,6 +183,7 @@ def __getattr__(name: str):
             "run_gradient_validation": run_gradient_validation,
             "run_gradient_validation_suite": run_gradient_validation_suite,
             "train_robust_group_online": train_robust_group_online,
+            "train_robust_time_varying": train_robust_time_varying,
             "train_robust_score_online": train_robust_score_online,
             "run_monte_carlo": run_monte_carlo,
             "run_validation_suite": run_validation_suite,
