@@ -213,6 +213,24 @@ minimax-ag-benchmark --benchmark georgia_peanut --mnar-mode drop_unobserved --as
 
 The benchmark output now also includes static action references like `static_corn_low` and `static_corn_medium`. This makes it obvious when all learned estimators collapse to the same action policy even if their label-fit metrics differ.
 
+Useful agriculture targets now include:
+
+- `net_income`: one-step supervised target
+- `survival_years`: remaining survival time from the current decision point
+- `cumulative_profit_to_go`: suffix profit from the current decision point to the end of the simulated path
+
+For example, the Georgia maize management bundle is now expressive enough to answer both:
+
+- which policies stay in business longer than `ERM`
+- which policies match or beat the strongest static competitor
+
+The benchmark summary reports:
+
+- mean survival and bankruptcy rate
+- pathwise outlast rate versus `ERM`
+- pathwise outlast rate versus the best static policy on the evaluation paths
+- dominant action share, so it is easy to see whether a learned policy is genuinely dynamic or just replicating one static management choice
+
 The current ag policy benchmark is also stricter than the first version:
 
 - learned policies no longer get realized weather regime as a decision-time feature

@@ -9,6 +9,7 @@ from minimax_core import (
 )
 from minimax_core.gradient_validation import (
     LinearDataset,
+    _clip_observation_rate,
     _mse,
     _predict,
     generate_linear_dataset,
@@ -104,3 +105,12 @@ def test_online_mnar_group_training_improves_after_hidden_row_drops() -> None:
 
     assert robust_mse == pytest.approx(erm_mse)
     assert online_mse < robust_mse
+
+
+def test_clip_observation_rate_respects_q1_bounds() -> None:
+    config = GradientValidationConfig(
+        q1=Q1ObjectiveConfig(q_min=0.25, q_max=0.75, adversary_step_size=0.05)
+    )
+
+    assert _clip_observation_rate(0.10, config) == pytest.approx(0.25)
+    assert _clip_observation_rate(0.90, config) == pytest.approx(0.75)

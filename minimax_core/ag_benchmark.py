@@ -81,8 +81,10 @@ class AgricultureBenchmarkConfig:
             raise ValueError("learning_rate must be positive.")
         if self.epochs <= 0:
             raise ValueError("epochs must be positive.")
-        if self.target not in {"yield", "net_income"}:
-            raise ValueError("target must be 'yield' or 'net_income'.")
+        if self.target not in {"yield", "net_income", "survival_years", "cumulative_profit_to_go"}:
+            raise ValueError(
+                "target must be 'yield', 'net_income', 'survival_years', or 'cumulative_profit_to_go'."
+            )
         if self.mnar_mode not in MNAR_VIEW_MODES:
             raise ValueError(f"mnar_mode must be one of {MNAR_VIEW_MODES}.")
         if self.assumed_observation_rate is not None and not 0.0 < self.assumed_observation_rate <= 1.0:
@@ -114,6 +116,9 @@ class AgricultureMethodMetrics:
     mean_terminal_wealth: float
     fifth_percentile_terminal_wealth: float
     mean_cumulative_profit: float
+    outlast_rate_vs_erm: float
+    outlast_rate_vs_best_static: float
+    mean_survival_gap_vs_best_static: float
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,11 @@ class AgricultureMethodSummary:
     mean_survival_improvement_vs_erm: float
     mean_bankruptcy_reduction_vs_erm: float
     win_rate_vs_erm: float
+    mean_outlast_rate_vs_erm: float
+    mean_outlast_rate_vs_best_static: float
+    mean_survival_gap_vs_best_static: float
+    dominant_action: str | None
+    dominant_action_share: float
 
 
 @dataclass(frozen=True)
@@ -156,6 +166,7 @@ class AgricultureBenchmarkSummary:
     mean_observation_rate: float
     mean_stable_observation_rate: float
     mean_distressed_observation_rate: float
+    best_reference_policy_name: str | None
     methods: dict[str, AgricultureMethodSummary]
     reference_policies: dict[str, AgricultureReferencePolicySummary] = field(default_factory=dict)
 
@@ -328,37 +339,49 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
 
     train_examples = []
     test_examples = []
+    train_targets: list[float] = []
+    test_targets: list[float] = []
     for policy in policies:
-        train_examples.extend(
-            generate_training_examples(
-                simulator=simulator,
-                scenario_generator=ScenarioGenerator(seed=config.seed + trial_index),
-                policy=policy,
-                observation_process=full_observation_process,
-                initial_state=initial_state,
-                horizon_years=config.horizon_years,
-                num_paths=config.train_paths,
-            )
+        policy_train_examples = generate_training_examples(
+            simulator=simulator,
+            scenario_generator=ScenarioGenerator(seed=config.seed + trial_index),
+            policy=policy,
+            observation_process=full_observation_process,
+            initial_state=initial_state,
+            horizon_years=config.horizon_years,
+            num_paths=config.train_paths,
         )
-        test_examples.extend(
-            generate_training_examples(
-                simulator=simulator,
-                scenario_generator=ScenarioGenerator(seed=config.seed + 10_000 + trial_index),
-                policy=policy,
-                observation_process=full_observation_process,
-                initial_state=initial_state,
-                horizon_years=config.horizon_years,
-                num_paths=config.test_paths,
-            )
+        policy_test_examples = generate_training_examples(
+            simulator=simulator,
+            scenario_generator=ScenarioGenerator(seed=config.seed + 10_000 + trial_index),
+            policy=policy,
+            observation_process=full_observation_process,
+            initial_state=initial_state,
+            horizon_years=config.horizon_years,
+            num_paths=config.test_paths,
         )
+        train_examples.extend(policy_train_examples)
+        test_examples.extend(policy_test_examples)
+        train_targets.extend(_build_policy_targets(policy_train_examples, config.target))
+        test_targets.extend(_build_policy_targets(policy_test_examples, config.target))
 
-    label_scale = 100_000.0 if config.target == "net_income" else 1.0
-    label_unit = "USD" if config.target == "net_income" else "bu/ac"
+    if config.target == "net_income":
+        label_scale = 100_000.0
+        label_unit = "USD"
+    elif config.target == "yield":
+        label_scale = 1.0
+        label_unit = "bu/ac"
+    elif config.target == "survival_years":
+        label_scale = 1.0
+        label_unit = "years"
+    else:
+        label_scale = 100_000.0
+        label_unit = "USD"
     latent_train_features = [
         _featurize_example(example, action_index_by_key=action_index_by_key)
         for example in train_examples
     ]
-    latent_train_labels = [_extract_label(example, config.target) / label_scale for example in train_examples]
+    latent_train_labels = [target / label_scale for target in train_targets]
     latent_train_group_ids = [example.group_id for example in train_examples]
     latent_train_path_indices = [int(example.path_index) for example in train_examples]
     latent_train_step_indices = [int(example.step_index) for example in train_examples]
@@ -399,7 +422,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         _featurize_example(example, action_index_by_key=action_index_by_key)
         for example in test_examples
     ]
-    test_labels = [_extract_label(example, config.target) / label_scale for example in test_examples]
+    test_labels = [target / label_scale for target in test_targets]
     test_group_ids = [example.group_id for example in test_examples]
 
     linear = LinearDataset(
@@ -430,7 +453,36 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
 def _extract_label(example: Any, target: str) -> float:
     if target == "yield":
         return float(example.latent_yield_per_acre)
+    if target in {"survival_years", "cumulative_profit_to_go"}:
+        raise ValueError(f"{target} labels must be built from full trajectories.")
     return float(example.latent_net_income)
+
+
+def _build_policy_targets(examples: list[Any], target: str) -> list[float]:
+    if target not in {"survival_years", "cumulative_profit_to_go"}:
+        return [_extract_label(example, target) for example in examples]
+
+    by_path: dict[int, list[Any]] = {}
+    for example in examples:
+        by_path.setdefault(int(example.path_index), []).append(example)
+
+    remaining_by_key: dict[tuple[int, int], float] = {}
+    for path_index, path_examples in by_path.items():
+        ordered = sorted(path_examples, key=lambda example: int(example.step_index))
+        if target == "survival_years":
+            total_steps = len(ordered)
+            for index, example in enumerate(ordered):
+                remaining_by_key[(path_index, int(example.step_index))] = float(total_steps - index)
+        else:
+            running_profit = 0.0
+            for example in reversed(ordered):
+                running_profit += float(example.latent_net_income)
+                remaining_by_key[(path_index, int(example.step_index))] = running_profit
+
+    return [
+        remaining_by_key[(int(example.path_index), int(example.step_index))]
+        for example in examples
+    ]
 
 
 def _extract_observed_label(example: Any, target: str) -> float | None:
@@ -524,6 +576,9 @@ def _evaluate_method(
     dataset: AgricultureDataset,
     *,
     policy_metrics: Any,
+    outlast_rate_vs_erm: float,
+    outlast_rate_vs_best_static: float,
+    mean_survival_gap_vs_best_static: float,
 ) -> AgricultureMethodMetrics:
     predictions = _predict(parameters, dataset.linear.test_features)
     labels = dataset.linear.test_labels
@@ -558,6 +613,9 @@ def _evaluate_method(
         mean_terminal_wealth=policy_metrics.mean_terminal_wealth,
         fifth_percentile_terminal_wealth=policy_metrics.fifth_percentile_terminal_wealth,
         mean_cumulative_profit=policy_metrics.mean_cumulative_profit,
+        outlast_rate_vs_erm=outlast_rate_vs_erm,
+        outlast_rate_vs_best_static=outlast_rate_vs_best_static,
+        mean_survival_gap_vs_best_static=mean_survival_gap_vs_best_static,
     )
 
 
@@ -567,7 +625,7 @@ def _run_policy_evaluation(
     trial_index: int,
     dataset: AgricultureDataset,
     method_parameters: dict[str, list[float]],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[Any, Any]:
     ag = _require_ag_survival_sim()
     FarmState = ag["FarmState"]
     ScenarioGenerator = ag["ScenarioGenerator"]
@@ -623,7 +681,58 @@ def _run_policy_evaluation(
         horizon_years=config.horizon_years,
         num_paths=config.test_paths,
     )
-    return learned_summary.metrics, reference_summary.metrics
+    return learned_summary, reference_summary
+
+
+def _outlast_rate(policy_evaluation: Any, competitor_evaluation: Any) -> float:
+    path_count = min(len(policy_evaluation.path_results), len(competitor_evaluation.path_results))
+    if path_count == 0:
+        return 0.0
+
+    wins = sum(
+        1
+        for policy_path, competitor_path in zip(
+            policy_evaluation.path_results,
+            competitor_evaluation.path_results,
+        )
+        if policy_path.survival_years > competitor_path.survival_years
+    )
+    return wins / path_count
+
+
+def _mean_survival_gap(policy_evaluation: Any, competitor_evaluation: Any) -> float:
+    path_count = min(len(policy_evaluation.path_results), len(competitor_evaluation.path_results))
+    if path_count == 0:
+        return 0.0
+
+    return mean(
+        policy_path.survival_years - competitor_path.survival_years
+        for policy_path, competitor_path in zip(
+            policy_evaluation.path_results,
+            competitor_evaluation.path_results,
+        )
+    )
+
+
+def _select_best_reference_policy_name(reference_summary: Any) -> str:
+    def _score(item: tuple[str, Any]) -> tuple[float, float, float]:
+        _name, metrics = item
+        return (
+            metrics.mean_survival_years,
+            -metrics.bankruptcy_rate,
+            metrics.mean_terminal_wealth,
+        )
+
+    return max(reference_summary.metrics.items(), key=_score)[0]
+
+
+def _collect_action_counts(policy_evaluation: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path_result in policy_evaluation.path_results:
+        for step in path_result.steps:
+            action_name = f"{step.action.crop}_{step.action.input_level}"
+            counts[action_name] = counts.get(action_name, 0) + 1
+    return counts
 
 
 def run_agriculture_benchmark(
@@ -637,6 +746,8 @@ def run_agriculture_benchmark(
     train_counts: list[int] = []
     test_counts: list[int] = []
     label_unit = "scaled"
+    best_reference_policy_names: list[str] = []
+    method_action_counts: dict[str, dict[str, int]] = {}
 
     for trial_index in range(config.trials):
         dataset = _build_agriculture_dataset(config, trial_index=trial_index)
@@ -675,21 +786,42 @@ def run_agriculture_benchmark(
                 robust_score_config,
             )
 
-        policy_metrics, reference_policy_metrics = _run_policy_evaluation(
+        learned_summary, reference_summary = _run_policy_evaluation(
             config,
             trial_index=trial_index,
             dataset=dataset,
             method_parameters=method_parameters,
         )
-        for policy_name, metrics in reference_policy_metrics.items():
+        best_reference_policy_name = _select_best_reference_policy_name(reference_summary)
+        best_reference_policy_names.append(best_reference_policy_name)
+        for method_name, evaluation in learned_summary.evaluations.items():
+            aggregate_counts = method_action_counts.setdefault(method_name, {})
+            for action_name, count in _collect_action_counts(evaluation).items():
+                aggregate_counts[action_name] = aggregate_counts.get(action_name, 0) + count
+
+        for policy_name, metrics in reference_summary.metrics.items():
             reference_policy_trials.setdefault(policy_name, []).append(metrics)
 
+        erm_evaluation = learned_summary.evaluations["erm"]
+        best_reference_evaluation = reference_summary.evaluations[best_reference_policy_name]
         per_trial_results.append(
             {
                 name: _evaluate_method(
                     parameters,
                     dataset,
-                    policy_metrics=policy_metrics[name],
+                    policy_metrics=learned_summary.metrics[name],
+                    outlast_rate_vs_erm=_outlast_rate(
+                        learned_summary.evaluations[name],
+                        erm_evaluation,
+                    ),
+                    outlast_rate_vs_best_static=_outlast_rate(
+                        learned_summary.evaluations[name],
+                        best_reference_evaluation,
+                    ),
+                    mean_survival_gap_vs_best_static=_mean_survival_gap(
+                        learned_summary.evaluations[name],
+                        best_reference_evaluation,
+                    ),
                 )
                 for name, parameters in method_parameters.items()
             }
@@ -703,6 +835,13 @@ def run_agriculture_benchmark(
     for method_name in available_methods:
         method_trials = [trial[method_name] for trial in per_trial_results]
         erm_trials = [trial["erm"] for trial in per_trial_results]
+        action_counts = method_action_counts.get(method_name, {})
+        total_action_count = sum(action_counts.values())
+        dominant_action = None
+        dominant_action_share = 0.0
+        if action_counts:
+            dominant_action, dominant_count = max(action_counts.items(), key=lambda item: item[1])
+            dominant_action_share = dominant_count / total_action_count if total_action_count else 0.0
         summaries[method_name] = AgricultureMethodSummary(
             name=method_name,
             mean_test_rmse=mean(metric.test_rmse for metric in method_trials),
@@ -736,6 +875,15 @@ def run_agriculture_benchmark(
                 1 for erm_metric, metric in zip(erm_trials, method_trials) if metric.test_rmse < erm_metric.test_rmse
             )
             / len(method_trials),
+            mean_outlast_rate_vs_erm=mean(metric.outlast_rate_vs_erm for metric in method_trials),
+            mean_outlast_rate_vs_best_static=mean(
+                metric.outlast_rate_vs_best_static for metric in method_trials
+            ),
+            mean_survival_gap_vs_best_static=mean(
+                metric.mean_survival_gap_vs_best_static for metric in method_trials
+            ),
+            dominant_action=dominant_action,
+            dominant_action_share=dominant_action_share,
         )
     for policy_name, metrics_list in reference_policy_trials.items():
         reference_summaries[policy_name] = AgricultureReferencePolicySummary(
@@ -759,6 +907,11 @@ def run_agriculture_benchmark(
         mean_observation_rate=mean(observation_rates),
         mean_stable_observation_rate=mean(stable_rates),
         mean_distressed_observation_rate=mean(distressed_rates),
+        best_reference_policy_name=(
+            max(set(best_reference_policy_names), key=best_reference_policy_names.count)
+            if best_reference_policy_names
+            else None
+        ),
         methods=summaries,
         reference_policies=reference_summaries,
     )
@@ -825,6 +978,11 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
         f"mean observation rate: {summary.mean_observation_rate:.3f}",
         f"mean stable observation rate: {summary.mean_stable_observation_rate:.3f}",
         f"mean distressed observation rate: {summary.mean_distressed_observation_rate:.3f}",
+        (
+            f"best static competitor: {summary.best_reference_policy_name}"
+            if summary.best_reference_policy_name
+            else "best static competitor: unavailable"
+        ),
         "",
         "predictive fit",
         "method         overall_rmse  distressed_rmse  stable_rmse  improve_vs_erm  distressed_improve  win_rate",
@@ -848,8 +1006,8 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
         [
             "",
             "downstream policy",
-            "method         mean_survival  median_survival  bankruptcy  mean_terminal_wealth  p05_terminal_wealth  mean_cum_profit  surv_vs_erm  bankr_reduct",
-            "-------------  -------------  ---------------  ----------  --------------------  -------------------  ---------------  -----------  ------------",
+            "method         mean_survival  median_survival  bankruptcy  mean_terminal_wealth  p05_terminal_wealth  mean_cum_profit  surv_vs_erm  bankr_reduct  outlast_erm  outlast_best_static  surv_gap_best_static",
+            "-------------  -------------  ---------------  ----------  --------------------  -------------------  ---------------  -----------  ------------  -----------  -------------------  --------------------",
         ]
     )
     for method_name in AG_METHOD_ORDER:
@@ -866,6 +1024,9 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
             f"  {method.mean_cumulative_profit:>15.2f}"
             f"  {method.mean_survival_improvement_vs_erm:>11.2f}"
             f"  {method.mean_bankruptcy_reduction_vs_erm:>12.2%}"
+            f"  {method.mean_outlast_rate_vs_erm:>11.2%}"
+            f"  {method.mean_outlast_rate_vs_best_static:>19.2%}"
+            f"  {method.mean_survival_gap_vs_best_static:>20.2f}"
         )
     if summary.reference_policies:
         lines.extend(
@@ -886,6 +1047,23 @@ def format_agriculture_benchmark_summary(summary: AgricultureBenchmarkSummary) -
                 f"  {policy.mean_fifth_percentile_terminal_wealth:>19.2f}"
                 f"  {policy.mean_cumulative_profit:>15.2f}"
             )
+    lines.extend(
+        [
+            "",
+            "action profile",
+            "method         dominant_action           share",
+            "-------------  -----------------------  -------",
+        ]
+    )
+    for method_name in AG_METHOD_ORDER:
+        method = summary.methods.get(method_name)
+        if method is None:
+            continue
+        lines.append(
+            f"{method_name:<13}"
+            f"  {(method.dominant_action or 'n/a'):<23}"
+            f"  {method.dominant_action_share:>6.2%}"
+        )
     return "\n".join(lines)
 
 
@@ -918,7 +1096,19 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--learning-rate", type=float, default=AgricultureBenchmarkConfig.learning_rate)
     parser.add_argument("--workspace-root", type=str, default=AgricultureBenchmarkConfig.workspace_root)
     parser.add_argument("--dssat-root", type=str, default=None)
-    parser.add_argument("--target", choices=["yield", "net_income"], default=AgricultureBenchmarkConfig.target)
+    parser.add_argument("--cash", type=float, default=AgricultureBenchmarkConfig.initial_cash)
+    parser.add_argument("--debt", type=float, default=AgricultureBenchmarkConfig.initial_debt)
+    parser.add_argument(
+        "--credit-limit",
+        type=float,
+        default=AgricultureBenchmarkConfig.initial_credit_limit,
+    )
+    parser.add_argument("--acres", type=float, default=AgricultureBenchmarkConfig.acres)
+    parser.add_argument(
+        "--target",
+        choices=["yield", "net_income", "survival_years", "cumulative_profit_to_go"],
+        default=AgricultureBenchmarkConfig.target,
+    )
     parser.add_argument("--mnar-mode", choices=MNAR_VIEW_MODES, default=AgricultureBenchmarkConfig.mnar_mode)
     parser.add_argument(
         "--base-observation-probability",
@@ -953,6 +1143,10 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
         epochs=args.epochs,
         workspace_root=args.workspace_root,
         dssat_root=args.dssat_root,
+        initial_cash=args.cash,
+        initial_debt=args.debt,
+        initial_credit_limit=args.credit_limit,
+        acres=args.acres,
         target=args.target,
         include_score_baseline=not args.exclude_score_baseline,
         include_online_mnar_baseline=not args.exclude_online_mnar_baseline,

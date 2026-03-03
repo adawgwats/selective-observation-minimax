@@ -197,6 +197,10 @@ def _normalize(weights: list[float]) -> list[float]:
     return [weight / total for weight in weights]
 
 
+def _clip_observation_rate(rate: float, config: GradientValidationConfig) -> float:
+    return min(max(rate, config.q1.q_min), config.q1.q_max)
+
+
 def _generate_split(
     rng: random.Random,
     count: int,
@@ -396,7 +400,10 @@ def train_robust_group(dataset: LinearDataset, config: GradientValidationConfig)
     empirical_observation_rate = (
         sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
     )
-    assumed_observation_rate = config.assumed_observation_rate or empirical_observation_rate
+    assumed_observation_rate = _clip_observation_rate(
+        config.assumed_observation_rate or empirical_observation_rate,
+        config,
+    )
 
     for _ in range(config.epochs):
         predictions = _predict(parameters, dataset.train_features)
@@ -429,6 +436,7 @@ def train_robust_score(dataset: LinearDataset, config: GradientValidationConfig)
     observation_rate = sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
     if config.assumed_observation_rate is not None:
         observation_rate = config.assumed_observation_rate
+    observation_rate = _clip_observation_rate(observation_rate, config)
 
     for _ in range(config.epochs):
         predictions = _predict(parameters, dataset.train_features)

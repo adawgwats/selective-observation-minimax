@@ -9,7 +9,9 @@ from minimax_core.ag_benchmark import (
     AgricultureReferencePolicySummary,
     AgricultureBenchmarkSummary,
     AgricultureBenchmarkSuiteSummary,
+    _outlast_rate,
     _build_proxy_label,
+    _build_policy_targets,
     _featurize_example,
     format_agriculture_benchmark_suite_summary,
     run_agriculture_benchmark,
@@ -19,6 +21,8 @@ from minimax_core.ag_benchmark import (
 
 @dataclass(frozen=True)
 class _Example:
+    path_index: int
+    step_index: int
     year: int
     crop: str
     cash: float
@@ -38,6 +42,8 @@ class _Example:
 def test_featurize_example_encodes_finance_action_and_weather() -> None:
     features = _featurize_example(
         _Example(
+            path_index=0,
+            step_index=0,
             year=3,
             crop="corn",
             cash=300_000.0,
@@ -66,6 +72,82 @@ def test_missing_proxy_uses_group_mean_before_global_mean() -> None:
     assert proxy == pytest.approx(-0.3)
 
 
+def test_build_policy_targets_supports_survival_years() -> None:
+    examples = [
+        _Example(
+            path_index=0,
+            step_index=0,
+            year=0,
+            crop="corn",
+            cash=0.0,
+            debt=0.0,
+            credit_limit=0.0,
+            acres=500.0,
+            input_level="low",
+            weather_regime="normal",
+            farm_alive_next_year=True,
+            group_id="stable",
+        ),
+        _Example(
+            path_index=0,
+            step_index=1,
+            year=1,
+            crop="corn",
+            cash=0.0,
+            debt=0.0,
+            credit_limit=0.0,
+            acres=500.0,
+            input_level="low",
+            weather_regime="normal",
+            farm_alive_next_year=False,
+            group_id="distressed",
+        ),
+    ]
+
+    targets = _build_policy_targets(examples, "survival_years")
+
+    assert targets == [2.0, 1.0]
+
+
+def test_build_policy_targets_supports_cumulative_profit_to_go() -> None:
+    examples = [
+        _Example(
+            path_index=0,
+            step_index=0,
+            year=0,
+            crop="corn",
+            cash=0.0,
+            debt=0.0,
+            credit_limit=0.0,
+            acres=500.0,
+            input_level="low",
+            weather_regime="normal",
+            farm_alive_next_year=True,
+            group_id="stable",
+            latent_net_income=100.0,
+        ),
+        _Example(
+            path_index=0,
+            step_index=1,
+            year=1,
+            crop="corn",
+            cash=0.0,
+            debt=0.0,
+            credit_limit=0.0,
+            acres=500.0,
+            input_level="low",
+            weather_regime="normal",
+            farm_alive_next_year=False,
+            group_id="distressed",
+            latent_net_income=-40.0,
+        ),
+    ]
+
+    targets = _build_policy_targets(examples, "cumulative_profit_to_go")
+
+    assert targets == [60.0, -40.0]
+
+
 def test_suite_runner_invokes_requested_benchmarks(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
@@ -81,6 +163,7 @@ def test_suite_runner_invokes_requested_benchmarks(monkeypatch: pytest.MonkeyPat
             mean_observation_rate=0.5,
             mean_stable_observation_rate=0.9,
             mean_distressed_observation_rate=0.2,
+            best_reference_policy_name="static_corn_medium",
             methods={},
         )
 
@@ -111,6 +194,7 @@ def test_format_suite_summary_includes_benchmark_headers() -> None:
                 mean_observation_rate=0.5,
                 mean_stable_observation_rate=0.9,
                 mean_distressed_observation_rate=0.2,
+                best_reference_policy_name="static_soy_medium",
                 methods={},
                 reference_policies={},
             )
@@ -134,6 +218,7 @@ def test_format_summary_includes_reference_static_policies() -> None:
         mean_observation_rate=0.5,
         mean_stable_observation_rate=0.9,
         mean_distressed_observation_rate=0.2,
+        best_reference_policy_name="static_corn_medium",
         methods={},
         reference_policies={
             "static_corn_medium": AgricultureReferencePolicySummary(
@@ -153,6 +238,47 @@ def test_format_summary_includes_reference_static_policies() -> None:
 
     assert "reference static policies" in rendered
     assert "static_corn_medium" in rendered
+    assert "action profile" in rendered
+
+
+def test_format_summary_includes_best_static_competitor() -> None:
+    summary = AgricultureBenchmarkSummary(
+        benchmark_name="georgia_maize_management",
+        target="survival_years",
+        label_unit="years",
+        trials=1,
+        train_count=10,
+        test_count=5,
+        mean_observation_rate=0.5,
+        mean_stable_observation_rate=0.9,
+        mean_distressed_observation_rate=0.2,
+        best_reference_policy_name="static_corn_irrigated_high",
+        methods={},
+        reference_policies={},
+    )
+
+    rendered = format_agriculture_benchmark_suite_summary(
+        AgricultureBenchmarkSuiteSummary(benchmarks={"georgia_maize_management": summary})
+    )
+
+    assert "best static competitor: static_corn_irrigated_high" in rendered
+
+
+def test_outlast_rate_counts_only_strict_survival_wins() -> None:
+    @dataclass(frozen=True)
+    class _PathResult:
+        survival_years: int
+
+    @dataclass(frozen=True)
+    class _PolicyEvaluation:
+        path_results: list[_PathResult]
+
+    rate = _outlast_rate(
+        _PolicyEvaluation(path_results=[_PathResult(3), _PathResult(2), _PathResult(4)]),
+        _PolicyEvaluation(path_results=[_PathResult(2), _PathResult(2), _PathResult(5)]),
+    )
+
+    assert rate == pytest.approx(1 / 3)
 
 
 @pytest.mark.integration
