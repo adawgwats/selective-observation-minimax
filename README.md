@@ -272,9 +272,97 @@ The current ag policy benchmark is also stricter than the first version:
 - learned policies no longer get realized weather regime as a decision-time feature
 - action features are benchmark-specific, so multi-action bundles are represented explicitly instead of collapsing into a single low/medium flag
 - the simulator now fails obviously unaffordable actions, which creates a real interaction between farm balance sheet and policy choice
+- learned policies now use decision-time price context (`t-1`, `t-2`, ... lags) with action-price interaction features, so crop choice can respond to changing price regimes
 
 Install helper dependency:
 
 ```bash
 pip install ".[ag]"
 ```
+
+Optional price-dynamics backend (open source `statsmodels`, used when `--price-dynamics-model statsmodels_arima`):
+
+```bash
+pip install ".[ag,ag_price]"
+```
+
+Price knobs (all available on both `minimax-ag-benchmark` and `minimax-ag-game`):
+
+- `--disable-price-features`
+- `--price-history-lags 3`
+- `--price-dynamics-model ema|autoregressive|statsmodels_arima`
+- `--price-spot-weight 0.65`
+- `--price-ema-alpha 0.35`
+- `--use-fred-price-history`
+- `--fred-price-lookback-years 100`
+- `--fred-price-end-year 2025` (optional; defaults to latest completed year)
+- `--fred-price-cache-dir data/fred_cache`
+
+FRED history initialization only uses completed past years (for example, with current date March 4, 2026, default end year is 2025).
+
+Current FRED crop proxies used by the simulator for historical initialization:
+
+- corn: `WPU012202`
+- soy: `WPU01830131`
+- wheat: `WPU0121`
+- rice: `WPU0123`
+- peanut: `WPU01830111`
+- sunflower: `WPU01830161`
+
+Example with FRED-backed historical initialization:
+
+```bash
+minimax-ag-benchmark --benchmark georgia_soybean --trials 3 --train-paths 6 --test-paths 4 --horizon-years 4 --use-fred-price-history --fred-price-lookback-years 100
+```
+
+## Turn-based AG game
+
+Browser UI (recommended):
+
+```bash
+pip install ".[ag,ag_game]"
+minimax-ag-game-ui --benchmark georgia_soybean --horizon-years 4 --method erm --method robust_group --method robust_group_online --use-fred-price-history --fred-price-lookback-years 100
+```
+
+Then open `http://127.0.0.1:7860`.
+
+The UI now includes:
+
+- turn-by-turn action selection
+- model actions and score-based recommendations
+- crop-level price lookback table (historical + simulated, adjustable window)
+- per-action history tails and model decision-time price estimates
+
+What the game does:
+
+- uses the same `AgricultureBenchmarkConfig` knobs as `minimax-ag-benchmark`
+- trains the selected model policies with the current minimax pipeline
+- starts you and every model from the same initial farm state
+- runs all actors on the same scenario path (`trial-index` + `path-index`)
+- shows model action scores and model chosen actions at each turn
+- shows per-option decision intelligence before each choice (estimated price, yield, margin, worst-case margin, and risk label)
+- writes a JSON trace (`outputs/ag_game_trace_ui.json` by default for UI)
+
+Legacy terminal UI is still available:
+
+```bash
+minimax-ag-game --benchmark georgia_soybean --horizon-years 4 --method erm --method robust_group --method robust_group_online
+```
+
+Useful options:
+
+- `--trial-index` and `--path-index` to replay specific paths
+- `--method` (repeatable) to control which model policies are compared
+- `--continue-after-bankruptcy` to keep simulating model actors if your farm fails
+- UI-only: `--host`, `--port`, `--lookback-default`, `--trace-output`
+
+For multi-crop allocation decisions each turn (planting multiple crops under acreage and financing limits), use portfolio mode:
+
+```bash
+minimax-ag-game --mode portfolio --portfolio-benchmark georgia_diversified_portfolio --portfolio-policy greedy_margin --portfolio-policy christensen_knightian --allocation-step-acres 10
+```
+
+Portfolio mode lets you assign acres across multiple discrete crop-input options each year, and validates each turn against:
+
+- total acreage (`<= farm acres`)
+- total planned operating cost (`<= cash + remaining credit`)

@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from statistics import mean
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .comparison import (
     train_erm_baseline,
@@ -29,7 +29,16 @@ from .gradient_validation import (
     train_robust_surprise,
     train_robust_time_varying,
 )
+from .fred_prices import (
+    FREDActionHistoryBundle,
+    build_action_price_histories_from_fred,
+)
 from .mnar import MNAR_VIEW_MODES, SyntheticMNARConfig, apply_synthetic_mnar, build_proxy_labels
+from .price_dynamics import (
+    PRICE_DYNAMICS_MODELS,
+    PriceDynamicsConfig,
+    estimate_decision_price,
+)
 
 
 AG_METHOD_ORDER = (
@@ -84,6 +93,15 @@ class AgricultureBenchmarkConfig:
     include_knightian_baseline: bool = True
     include_structural_break_baseline: bool = True
     include_surprise_baseline: bool = True
+    include_price_features: bool = True
+    price_history_lags: int = 3
+    price_dynamics_model: str = "ema"
+    price_spot_weight: float = 0.65
+    price_ema_alpha: float = 0.35
+    use_fred_price_history: bool = False
+    fred_price_lookback_years: int = 100
+    fred_price_end_year: int | None = None
+    fred_price_cache_dir: str = "data/fred_cache"
     assumed_observation_rate: float | None = None
     q1: Q1ObjectiveConfig = field(default_factory=Q1ObjectiveConfig)
 
@@ -108,6 +126,25 @@ class AgricultureBenchmarkConfig:
             raise ValueError(f"mnar_mode must be one of {MNAR_VIEW_MODES}.")
         if self.assumed_observation_rate is not None and not 0.0 < self.assumed_observation_rate <= 1.0:
             raise ValueError("assumed_observation_rate must be in (0, 1].")
+        if self.price_history_lags < 0:
+            raise ValueError("price_history_lags must be nonnegative.")
+        if self.price_dynamics_model not in PRICE_DYNAMICS_MODELS:
+            raise ValueError(f"price_dynamics_model must be one of {PRICE_DYNAMICS_MODELS}.")
+        if not 0.0 <= self.price_spot_weight <= 1.0:
+            raise ValueError("price_spot_weight must be in [0, 1].")
+        if not 0.0 < self.price_ema_alpha <= 1.0:
+            raise ValueError("price_ema_alpha must be in (0, 1].")
+        if self.fred_price_lookback_years <= 0:
+            raise ValueError("fred_price_lookback_years must be positive.")
+        if self.fred_price_end_year is not None and self.fred_price_end_year < 1900:
+            raise ValueError("fred_price_end_year must be >= 1900 when provided.")
+
+    def price_dynamics_config(self) -> PriceDynamicsConfig:
+        return PriceDynamicsConfig(
+            model=self.price_dynamics_model,
+            spot_weight=self.price_spot_weight,
+            ema_alpha=self.price_ema_alpha,
+        )
 
 
 @dataclass(frozen=True)
@@ -232,14 +269,27 @@ class _MemoizedCropModel:
 
 
 @dataclass(frozen=True)
+class _PriceFeatureContext:
+    decision_price_estimate: float
+    lagged_prices: tuple[float, ...]
+    base_price: float
+
+
+@dataclass
 class _LinearPredictivePolicy:
     parameters: list[float]
     actions: tuple[Any, ...]
     action_index_by_key: dict[tuple[str, str], int]
     planned_operating_cost: Callable[[Any, float], float] | None = None
+    include_price_features: bool = True
+    price_history_lags: int = 3
+    price_dynamics: PriceDynamicsConfig = field(default_factory=PriceDynamicsConfig)
+    realized_price_fn: Callable[[Any, Any], float] | None = None
+    action_base_price_by_key: dict[tuple[str, str], float] = field(default_factory=dict)
+    initial_price_history_by_action: dict[tuple[str, str], list[float]] = field(default_factory=dict)
+    _price_history_by_action: dict[tuple[str, str], list[float]] = field(default_factory=dict, init=False, repr=False)
 
     def choose_action(self, state: Any, scenario: Any) -> Any:
-        del scenario
         feasible_actions = list(self.actions)
         if self.planned_operating_cost is not None:
             available_capital = state.cash + state.remaining_credit
@@ -249,21 +299,57 @@ class _LinearPredictivePolicy:
                 if self.planned_operating_cost(action, state.acres) <= available_capital
             ] or list(self.actions)
 
+        if self.include_price_features and int(state.year) == 0:
+            self._price_history_by_action = {
+                action_key: list(values)
+                for action_key, values in self.initial_price_history_by_action.items()
+            }
+
         best_action = feasible_actions[0]
         best_score = float("-inf")
         for action in feasible_actions:
+            price_context = self._decision_price_context(action=action, scenario=scenario)
             score = _dot_product(
                 self.parameters,
                 _featurize_decision(
                     state=state,
                     action=action,
                     action_index_by_key=self.action_index_by_key,
+                    price_context=price_context,
                 ),
             )
             if score > best_score:
                 best_score = score
                 best_action = action
+
+        self._record_market_prices(scenario)
         return best_action
+
+    def _decision_price_context(self, *, action: Any, scenario: Any) -> _PriceFeatureContext | None:
+        if not self.include_price_features or self.realized_price_fn is None:
+            return None
+        action_key = (str(action.crop), str(action.input_level))
+        history = self._price_history_by_action.setdefault(action_key, [])
+        spot_price = float(self.realized_price_fn(action, scenario))
+        base_price = float(self.action_base_price_by_key.get(action_key, max(spot_price, 1.0)))
+        return _build_price_feature_context(
+            history=history,
+            spot_price=spot_price,
+            base_price=base_price,
+            lags=self.price_history_lags,
+            price_dynamics=self.price_dynamics,
+        )
+
+    def _record_market_prices(self, scenario: Any) -> None:
+        if not self.include_price_features or self.realized_price_fn is None:
+            return
+        keep_window = max(self.price_history_lags * 6, 24)
+        for action in self.actions:
+            action_key = (str(action.crop), str(action.input_level))
+            history = self._price_history_by_action.setdefault(action_key, [])
+            history.append(float(self.realized_price_fn(action, scenario)))
+            if len(history) > keep_window:
+                del history[:-keep_window]
 
 
 @dataclass(frozen=True)
@@ -323,6 +409,10 @@ def _require_ag_survival_sim() -> dict[str, Any]:
             plot_policy_action_traces,
             plot_policy_profit_traces,
         )
+        from ag_survival_sim.finance import (  # type: ignore[import-not-found]
+            ECONOMICS_BY_ACTION,
+            realized_price,
+        )
         from ag_survival_sim.simulator import FarmSimulator  # type: ignore[import-not-found]
     except ImportError as error:
         raise ImportError(
@@ -343,6 +433,8 @@ def _require_ag_survival_sim() -> dict[str, Any]:
         "get_benchmark_definition": get_benchmark_definition,
         "list_benchmark_definitions": list_benchmark_definitions,
         "planned_operating_cost": planned_operating_cost,
+        "realized_price": realized_price,
+        "economics_by_action": ECONOMICS_BY_ACTION,
         "plot_policy_action_traces": plot_policy_action_traces,
         "plot_policy_profit_traces": plot_policy_profit_traces,
     }
@@ -357,6 +449,117 @@ def _available_benchmark_names() -> tuple[str, ...]:
     return tuple(definition.name for definition in ag["list_benchmark_definitions"]())
 
 
+def _action_base_prices(
+    actions: Sequence[Any],
+    *,
+    economics_by_action: dict[tuple[str, str], Any],
+) -> dict[tuple[str, str], float]:
+    base_prices: dict[tuple[str, str], float] = {}
+    for action in actions:
+        action_key = (str(action.crop), str(action.input_level))
+        economics = economics_by_action.get(action_key)
+        if economics is None:
+            base_prices[action_key] = 1.0
+        else:
+            base_prices[action_key] = max(float(economics.base_price), 0.01)
+    return base_prices
+
+
+def _initial_action_price_histories(
+    *,
+    config: AgricultureBenchmarkConfig,
+    actions: Sequence[Any],
+    action_base_price_by_key: dict[tuple[str, str], float],
+) -> FREDActionHistoryBundle | None:
+    if not config.include_price_features or not config.use_fred_price_history:
+        return None
+    action_keys = [(str(action.crop), str(action.input_level)) for action in actions]
+    try:
+        return build_action_price_histories_from_fred(
+            action_keys=action_keys,
+            base_price_by_action=action_base_price_by_key,
+            lookback_years=config.fred_price_lookback_years,
+            end_year=config.fred_price_end_year,
+            cache_dir=config.fred_price_cache_dir,
+        )
+    except Exception:
+        # Fall back to simulation-only history if FRED is unavailable.
+        return None
+
+
+def _lagged_prices(*, history: Sequence[float], lags: int, fallback: float) -> tuple[float, ...]:
+    if lags <= 0:
+        return tuple()
+    return tuple(
+        float(history[-lag]) if len(history) >= lag else float(fallback)
+        for lag in range(1, lags + 1)
+    )
+
+
+def _build_price_feature_context(
+    *,
+    history: Sequence[float],
+    spot_price: float,
+    base_price: float,
+    lags: int,
+    price_dynamics: PriceDynamicsConfig,
+) -> _PriceFeatureContext:
+    decision_price_estimate = estimate_decision_price(
+        history=history,
+        spot_price=spot_price,
+        config=price_dynamics,
+    )
+    return _PriceFeatureContext(
+        decision_price_estimate=decision_price_estimate,
+        lagged_prices=_lagged_prices(
+            history=history,
+            lags=lags,
+            fallback=spot_price,
+        ),
+        base_price=max(float(base_price), 0.01),
+    )
+
+
+def _build_example_price_contexts(
+    examples: Sequence[Any],
+    *,
+    include_price_features: bool,
+    price_history_lags: int,
+    price_dynamics: PriceDynamicsConfig,
+    action_base_price_by_key: dict[tuple[str, str], float],
+    initial_price_history_by_action: dict[tuple[str, str], list[float]] | None = None,
+) -> list[_PriceFeatureContext | None]:
+    if not include_price_features:
+        return [None for _ in examples]
+
+    contexts: list[_PriceFeatureContext | None] = []
+    history_by_action_path: dict[tuple[tuple[str, str], int], list[float]] = {}
+    for example in examples:
+        action_key = (str(example.crop), str(example.input_level))
+        action_path_key = (action_key, int(example.path_index))
+        history = history_by_action_path.get(action_path_key)
+        if history is None:
+            base_history = (
+                initial_price_history_by_action.get(action_key, [])
+                if initial_price_history_by_action is not None
+                else []
+            )
+            history = list(base_history)
+            history_by_action_path[action_path_key] = history
+        spot_price = float(example.latent_price)
+        contexts.append(
+            _build_price_feature_context(
+                history=history,
+                spot_price=spot_price,
+                base_price=action_base_price_by_key.get(action_key, max(spot_price, 1.0)),
+                lags=price_history_lags,
+                price_dynamics=price_dynamics,
+            )
+        )
+        history.append(spot_price)
+    return contexts
+
+
 def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_index: int) -> AgricultureDataset:
     ag = _require_ag_survival_sim()
     Action = ag["Action"]
@@ -365,6 +568,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     StaticPolicy = ag["StaticPolicy"]
     FarmSimulator = ag["FarmSimulator"]
     build_benchmark_crop_model = ag["build_benchmark_crop_model"]
+    economics_by_action = ag["economics_by_action"]
     generate_training_examples = ag["generate_training_examples"]
     get_benchmark_definition = ag["get_benchmark_definition"]
 
@@ -373,6 +577,31 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         (action.crop, action.input_level): index
         for index, action in enumerate(benchmark.actions)
     }
+    action_base_price_by_key = _action_base_prices(
+        benchmark.actions,
+        economics_by_action=economics_by_action,
+    )
+    initial_fred_bundle = _initial_action_price_histories(
+        config=config,
+        actions=benchmark.actions,
+        action_base_price_by_key=action_base_price_by_key,
+    )
+    initial_price_history_by_action = (
+        initial_fred_bundle.price_history_by_action
+        if initial_fred_bundle is not None
+        else {}
+    )
+    price_dynamics = config.price_dynamics_config()
+    initial_fred_bundle = _initial_action_price_histories(
+        config=config,
+        actions=benchmark.actions,
+        action_base_price_by_key=action_base_price_by_key,
+    )
+    initial_price_history_by_action = (
+        initial_fred_bundle.price_history_by_action
+        if initial_fred_bundle is not None
+        else None
+    )
     crop_model = build_benchmark_crop_model(
         config.benchmark_name,
         dssat_root=config.dssat_root,
@@ -429,9 +658,21 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     else:
         label_scale = 100_000.0
         label_unit = "USD"
+    train_price_contexts = _build_example_price_contexts(
+        train_examples,
+        include_price_features=config.include_price_features,
+        price_history_lags=config.price_history_lags,
+        price_dynamics=price_dynamics,
+        action_base_price_by_key=action_base_price_by_key,
+        initial_price_history_by_action=initial_price_history_by_action,
+    )
     latent_train_features = [
-        _featurize_example(example, action_index_by_key=action_index_by_key)
-        for example in train_examples
+        _featurize_example(
+            example,
+            action_index_by_key=action_index_by_key,
+            price_context=price_context,
+        )
+        for example, price_context in zip(train_examples, train_price_contexts)
     ]
     latent_train_labels = [target / label_scale for target in train_targets]
     latent_train_group_ids = [example.group_id for example in train_examples]
@@ -479,9 +720,21 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         label_scale=1.0,
     )
 
+    test_price_contexts = _build_example_price_contexts(
+        test_examples,
+        include_price_features=config.include_price_features,
+        price_history_lags=config.price_history_lags,
+        price_dynamics=price_dynamics,
+        action_base_price_by_key=action_base_price_by_key,
+        initial_price_history_by_action=initial_price_history_by_action,
+    )
     test_features = [
-        _featurize_example(example, action_index_by_key=action_index_by_key)
-        for example in test_examples
+        _featurize_example(
+            example,
+            action_index_by_key=action_index_by_key,
+            price_context=price_context,
+        )
+        for example, price_context in zip(test_examples, test_price_contexts)
     ]
     test_labels = [target / label_scale for target in test_targets]
     test_group_ids = [example.group_id for example in test_examples]
@@ -608,12 +861,31 @@ def _featurize_fields(
     year: int,
     action_key: tuple[str, str],
     action_index_by_key: dict[tuple[str, str], int],
+    price_context: _PriceFeatureContext | None = None,
 ) -> list[float]:
     action_features = [0.0 for _ in action_index_by_key]
     try:
         action_features[action_index_by_key[action_key]] = 1.0
     except KeyError as error:
         raise KeyError(f"unknown action key for agriculture featurization: {action_key!r}") from error
+
+    price_features: list[float] = []
+    price_interactions: list[float] = []
+    if price_context is not None:
+        base_price = max(float(price_context.base_price), 0.01)
+        lag_mean = (
+            sum(price_context.lagged_prices) / len(price_context.lagged_prices)
+            if price_context.lagged_prices
+            else float(price_context.decision_price_estimate)
+        )
+        price_features = [
+            float(price_context.decision_price_estimate) / base_price,
+            *[float(price) / base_price for price in price_context.lagged_prices],
+            (float(price_context.decision_price_estimate) - lag_mean) / base_price,
+        ]
+        for action_active in action_features:
+            for price_feature in price_features:
+                price_interactions.append(action_active * price_feature)
 
     return [
         1.0,
@@ -625,6 +897,8 @@ def _featurize_fields(
         land_mortgage_years_remaining / 30.0,
         land_mortgage_grace_years_remaining / 2.0,
         year / 10.0,
+        *price_features,
+        *price_interactions,
         *action_features,
     ]
 
@@ -633,6 +907,7 @@ def _featurize_example(
     example: Any,
     *,
     action_index_by_key: dict[tuple[str, str], int],
+    price_context: _PriceFeatureContext | None = None,
 ) -> list[float]:
     return _featurize_fields(
         cash=example.cash,
@@ -645,6 +920,7 @@ def _featurize_example(
         year=int(example.year),
         action_key=(str(example.crop), str(example.input_level)),
         action_index_by_key=action_index_by_key,
+        price_context=price_context,
     )
 
 
@@ -653,6 +929,7 @@ def _featurize_decision(
     state: Any,
     action: Any,
     action_index_by_key: dict[tuple[str, str], int],
+    price_context: _PriceFeatureContext | None = None,
 ) -> list[float]:
     return _featurize_fields(
         cash=state.cash,
@@ -665,6 +942,7 @@ def _featurize_decision(
         year=int(state.year),
         action_key=(str(action.crop), str(action.input_level)),
         action_index_by_key=action_index_by_key,
+        price_context=price_context,
     )
 
 
@@ -733,11 +1011,27 @@ def _run_policy_evaluation(
     StaticPolicy = ag["StaticPolicy"]
     FarmSimulator = ag["FarmSimulator"]
     build_benchmark_crop_model = ag["build_benchmark_crop_model"]
+    economics_by_action = ag["economics_by_action"]
     evaluate_policies = ag["evaluate_policies"]
     get_benchmark_definition = ag["get_benchmark_definition"]
     planned_operating_cost = ag["planned_operating_cost"]
+    realized_price = ag["realized_price"]
 
     benchmark = get_benchmark_definition(config.benchmark_name)
+    action_base_price_by_key = _action_base_prices(
+        benchmark.actions,
+        economics_by_action=economics_by_action,
+    )
+    initial_fred_bundle = _initial_action_price_histories(
+        config=config,
+        actions=benchmark.actions,
+        action_base_price_by_key=action_base_price_by_key,
+    )
+    initial_price_history_by_action = (
+        initial_fred_bundle.price_history_by_action
+        if initial_fred_bundle is not None
+        else {}
+    )
     crop_model = build_benchmark_crop_model(
         config.benchmark_name,
         dssat_root=config.dssat_root,
@@ -754,6 +1048,12 @@ def _run_policy_evaluation(
             actions=benchmark.actions,
             action_index_by_key=dataset.action_index_by_key,
             planned_operating_cost=planned_operating_cost,
+            include_price_features=config.include_price_features,
+            price_history_lags=config.price_history_lags,
+            price_dynamics=config.price_dynamics_config(),
+            realized_price_fn=realized_price,
+            action_base_price_by_key=action_base_price_by_key,
+            initial_price_history_by_action=initial_price_history_by_action,
         )
         for method_name, parameters in method_parameters.items()
     }
@@ -1390,6 +1690,43 @@ def _add_common_ag_benchmark_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exclude-knightian-baseline", action="store_true")
     parser.add_argument("--exclude-structural-break-baseline", action="store_true")
     parser.add_argument("--exclude-surprise-baseline", action="store_true")
+    parser.add_argument("--disable-price-features", action="store_true")
+    parser.add_argument(
+        "--price-history-lags",
+        type=int,
+        default=AgricultureBenchmarkConfig.price_history_lags,
+    )
+    parser.add_argument(
+        "--price-dynamics-model",
+        choices=PRICE_DYNAMICS_MODELS,
+        default=AgricultureBenchmarkConfig.price_dynamics_model,
+    )
+    parser.add_argument(
+        "--price-spot-weight",
+        type=float,
+        default=AgricultureBenchmarkConfig.price_spot_weight,
+    )
+    parser.add_argument(
+        "--price-ema-alpha",
+        type=float,
+        default=AgricultureBenchmarkConfig.price_ema_alpha,
+    )
+    parser.add_argument("--use-fred-price-history", action="store_true")
+    parser.add_argument(
+        "--fred-price-lookback-years",
+        type=int,
+        default=AgricultureBenchmarkConfig.fred_price_lookback_years,
+    )
+    parser.add_argument(
+        "--fred-price-end-year",
+        type=int,
+        default=AgricultureBenchmarkConfig.fred_price_end_year,
+    )
+    parser.add_argument(
+        "--fred-price-cache-dir",
+        type=str,
+        default=AgricultureBenchmarkConfig.fred_price_cache_dir,
+    )
     parser.add_argument("--assumed-observation-rate", type=float, default=None)
 
 
@@ -1427,6 +1764,15 @@ def _config_from_namespace(args: argparse.Namespace) -> AgricultureBenchmarkConf
         include_knightian_baseline=not args.exclude_knightian_baseline,
         include_structural_break_baseline=not args.exclude_structural_break_baseline,
         include_surprise_baseline=not args.exclude_surprise_baseline,
+        include_price_features=not args.disable_price_features,
+        price_history_lags=args.price_history_lags,
+        price_dynamics_model=args.price_dynamics_model,
+        price_spot_weight=args.price_spot_weight,
+        price_ema_alpha=args.price_ema_alpha,
+        use_fred_price_history=args.use_fred_price_history,
+        fred_price_lookback_years=args.fred_price_lookback_years,
+        fred_price_end_year=args.fred_price_end_year,
+        fred_price_cache_dir=args.fred_price_cache_dir,
         assumed_observation_rate=args.assumed_observation_rate,
         q1=Q1ObjectiveConfig(
             q_min=args.q_min,

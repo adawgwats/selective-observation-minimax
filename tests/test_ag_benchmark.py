@@ -9,14 +9,19 @@ from minimax_core.ag_benchmark import (
     AgricultureReferencePolicySummary,
     AgricultureBenchmarkSummary,
     AgricultureBenchmarkSuiteSummary,
+    _LinearPredictivePolicy,
+    _PriceFeatureContext,
+    _build_example_price_contexts,
     _outlast_rate,
     _build_proxy_label,
     _build_policy_targets,
+    _featurize_decision,
     _featurize_example,
     format_agriculture_benchmark_suite_summary,
     run_agriculture_benchmark,
     run_agriculture_benchmark_suite,
 )
+from minimax_core.price_dynamics import PriceDynamicsConfig
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,39 @@ def test_featurize_example_encodes_finance_action_and_weather() -> None:
     assert features == [1.0, 1.0, 0.5, 0.875, 1.0, 1.0, 1.0, 1.0, 0.3, 0.0, 1.0]
 
 
+def test_featurize_example_adds_price_context_features_and_interactions() -> None:
+    features = _featurize_example(
+        _Example(
+            path_index=0,
+            step_index=0,
+            year=3,
+            crop="corn",
+            cash=300_000.0,
+            debt=100_000.0,
+            credit_limit=175_000.0,
+            acres=500.0,
+            land_mortgage_balance=2_000_000.0,
+            land_mortgage_years_remaining=30,
+            land_mortgage_grace_years_remaining=2,
+            input_level="medium",
+            weather_regime="drought",
+            farm_alive_next_year=False,
+            group_id="distressed",
+        ),
+        action_index_by_key={("corn", "low"): 0, ("corn", "medium"): 1},
+        price_context=_PriceFeatureContext(
+            decision_price_estimate=4.7,
+            lagged_prices=(4.6, 4.5),
+            base_price=4.7,
+        ),
+    )
+
+    # 9 state fields + 4 price fields + 8 action-price interactions + 2 action one-hot fields.
+    assert len(features) == 23
+    assert features[-2:] == [0.0, 1.0]
+    assert features[9] == pytest.approx(1.0)
+
+
 def test_missing_proxy_uses_group_mean_before_global_mean() -> None:
     proxy = _build_proxy_label(
         label=None,
@@ -76,6 +114,104 @@ def test_missing_proxy_uses_group_mean_before_global_mean() -> None:
         label_scale=1.0,
     )
     assert proxy == pytest.approx(-0.3)
+
+
+def test_linear_policy_uses_price_features_at_decision_time() -> None:
+    @dataclass(frozen=True)
+    class _Action:
+        crop: str
+        input_level: str
+
+    @dataclass(frozen=True)
+    class _Scenario:
+        prices: dict[tuple[str, str], float]
+
+    @dataclass(frozen=True)
+    class _State:
+        cash: float = 1_000.0
+        debt: float = 0.0
+        credit_limit: float = 0.0
+        acres: float = 100.0
+        land_mortgage_balance: float = 0.0
+        land_mortgage_years_remaining: int = 0
+        land_mortgage_grace_years_remaining: int = 0
+        year: int = 0
+
+        @property
+        def remaining_credit(self) -> float:
+            return max(self.credit_limit - max(self.debt, 0.0), 0.0)
+
+    actions = (_Action("corn", "low"), _Action("corn", "medium"))
+    action_index_by_key = {("corn", "low"): 0, ("corn", "medium"): 1}
+
+    sample_features = _featurize_decision(
+        state=_State(),
+        action=actions[0],
+        action_index_by_key=action_index_by_key,
+        price_context=_PriceFeatureContext(
+            decision_price_estimate=4.7,
+            lagged_prices=(4.7,),
+            base_price=4.7,
+        ),
+    )
+    parameters = [0.0 for _ in sample_features]
+
+    state_feature_count = 9
+    price_feature_count = 3  # estimate, lag1, trend
+    interaction_start = state_feature_count + price_feature_count
+    # Put equal positive weight on each action's own price interaction term.
+    parameters[interaction_start] = 1.0
+    parameters[interaction_start + price_feature_count] = 1.0
+
+    policy = _LinearPredictivePolicy(
+        parameters=parameters,
+        actions=actions,
+        action_index_by_key=action_index_by_key,
+        include_price_features=True,
+        price_history_lags=1,
+        price_dynamics=PriceDynamicsConfig(model="ema", spot_weight=1.0),
+        realized_price_fn=lambda action, scenario: float(
+            scenario.prices[(str(action.crop), str(action.input_level))]
+        ),
+        action_base_price_by_key={
+            ("corn", "low"): 1.0,
+            ("corn", "medium"): 1.0,
+        },
+    )
+
+    low_is_pricier = _Scenario(prices={("corn", "low"): 6.0, ("corn", "medium"): 4.0})
+    high_is_pricier = _Scenario(prices={("corn", "low"): 3.0, ("corn", "medium"): 8.0})
+
+    assert policy.choose_action(_State(), low_is_pricier) == actions[0]
+    assert policy.choose_action(_State(), high_is_pricier) == actions[1]
+
+
+def test_build_example_price_contexts_uses_initial_price_history() -> None:
+    @dataclass(frozen=True)
+    class _PriceExample:
+        crop: str
+        input_level: str
+        path_index: int
+        latent_price: float
+
+    examples = [
+        _PriceExample(crop="corn", input_level="low", path_index=0, latent_price=5.1),
+        _PriceExample(crop="corn", input_level="low", path_index=0, latent_price=5.3),
+    ]
+
+    contexts = _build_example_price_contexts(
+        examples,
+        include_price_features=True,
+        price_history_lags=2,
+        price_dynamics=PriceDynamicsConfig(model="ema", spot_weight=1.0),
+        action_base_price_by_key={("corn", "low"): 5.0},
+        initial_price_history_by_action={("corn", "low"): [4.0, 4.2]},
+    )
+
+    assert contexts[0] is not None
+    assert contexts[0].lagged_prices == pytest.approx((4.2, 4.0))
+    assert contexts[1] is not None
+    assert contexts[1].lagged_prices == pytest.approx((5.1, 4.2))
 
 
 def test_build_policy_targets_supports_survival_years() -> None:
