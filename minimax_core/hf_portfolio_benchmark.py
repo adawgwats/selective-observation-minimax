@@ -39,12 +39,16 @@ class HFPortfolioBenchmarkConfig:
     candidate_random_samples: int = 18
     max_active_actions: int = 3
     bankruptcy_penalty_per_acre: float = 15_000.0
+    allocation_search_rounds: int = 6
+    allocation_search_samples: int = 96
+    allocation_search_elite_count: int = 12
     view_mode: str = "drop_unobserved"
     base_observation_probability: float = 0.95
     distressed_penalty: float = 0.60
     drought_penalty: float = 0.10
     exit_penalty: float = 0.15
     weight_decay: float = 1.0e-4
+    uncertainty_mode: str = "knightian"
 
 
 @dataclass(frozen=True)
@@ -99,12 +103,14 @@ class _TabularCollator:
             "labels": torch.tensor([feature["labels"] for feature in features], dtype=torch.float32),
             "time_index": torch.tensor([feature["time_index"] for feature in features], dtype=torch.long),
             "history_score": torch.tensor([feature["history_score"] for feature in features], dtype=torch.float32),
+            "path_index": torch.tensor([feature["path_index"] for feature in features], dtype=torch.long),
         }
 
 
 def _require_ag_survival_sim() -> dict[str, Any]:
     try:
         from ag_survival_sim import (
+            ContinuousAllocationOptimizer,
             FarmState,
             PortfolioFarmSimulator,
             ScenarioGenerator,
@@ -127,6 +133,7 @@ def _require_ag_survival_sim() -> dict[str, Any]:
         ) from error
 
     return {
+        "ContinuousAllocationOptimizer": ContinuousAllocationOptimizer,
         "FarmState": FarmState,
         "PortfolioFarmSimulator": PortfolioFarmSimulator,
         "ScenarioGenerator": ScenarioGenerator,
@@ -174,6 +181,7 @@ def _build_training_rows(config: HFPortfolioBenchmarkConfig) -> tuple[list[dict[
     PortfolioFarmSimulator = ag["PortfolioFarmSimulator"]
     build_portfolio_benchmark_crop_model = ag["build_portfolio_benchmark_crop_model"]
     get_portfolio_benchmark_definition = ag["get_portfolio_benchmark_definition"]
+    ContinuousAllocationOptimizer = ag["ContinuousAllocationOptimizer"]
     PortfolioCandidateGenerator = ag["PortfolioCandidateGenerator"]
     RandomPortfolioPolicy = ag["RandomPortfolioPolicy"]
     _featurize_state_allocation = ag["_featurize_state_allocation"]
@@ -195,6 +203,14 @@ def _build_training_rows(config: HFPortfolioBenchmarkConfig) -> tuple[list[dict[
         top_action_count=config.top_action_count,
         random_samples=config.candidate_random_samples,
         max_active_actions=config.max_active_actions,
+    )
+    allocation_optimizer = ContinuousAllocationOptimizer(
+        actions=actions,
+        max_share_per_action=1.0,
+        max_share_per_crop=1.0,
+        search_rounds=config.allocation_search_rounds,
+        samples_per_round=config.allocation_search_samples,
+        elite_count=config.allocation_search_elite_count,
     )
     exploration_policies = build_learning_exploration_policies(
         actions=actions,
@@ -274,7 +290,7 @@ def _build_training_rows(config: HFPortfolioBenchmarkConfig) -> tuple[list[dict[
         "actions": actions,
         "crop_model": crop_model,
         "initial_state": initial_state,
-        "candidate_generator": candidate_generator,
+        "allocation_optimizer": allocation_optimizer,
         "benchmark": benchmark,
         "exploration_policies": exploration_policies,
     }
@@ -310,7 +326,7 @@ class _HFPortfolioPolicy:
     model: Any
     actions: tuple[Any, ...]
     crop_model: Any
-    candidate_generator: Any
+    allocation_optimizer: Any
     horizon_years: int
     seed_policies: tuple[Any, ...]
     seed: int
@@ -320,21 +336,11 @@ class _HFPortfolioPolicy:
 
         seed_allocations = tuple(policy.choose_allocation(state, scenario) for policy in self.seed_policies)
         rng = random.Random(hash((self.seed, state.year, round(state.cash, 2), round(state.debt, 2), scenario.year_index)))
-        candidates = self.candidate_generator.generate(
-            state,
-            scenario,
-            rng=rng,
-            seed_allocations=seed_allocations,
-        )
-        if not candidates:
-            from ag_survival_sim import PortfolioAllocation
-
-            return PortfolioAllocation(())
-
         ag = _require_ag_survival_sim()
         _featurize_state_allocation = ag["_featurize_state_allocation"]
-        feature_rows = [
-            _featurize_state_allocation(
+
+        def score_candidate(candidate: Any) -> float:
+            feature_row = _featurize_state_allocation(
                 state,
                 scenario,
                 candidate,
@@ -342,13 +348,17 @@ class _HFPortfolioPolicy:
                 self.crop_model,
                 self.horizon_years,
             )
-            for candidate in candidates
-        ]
-        with torch.no_grad():
-            outputs = self.model(features=torch.tensor(feature_rows, dtype=torch.float32))
-            logits = outputs["logits"].squeeze(-1).cpu().tolist()
-        best_index = max(range(len(candidates)), key=lambda index: float(logits[index]))
-        return candidates[best_index]
+            with torch.no_grad():
+                outputs = self.model(features=torch.tensor([feature_row], dtype=torch.float32))
+            return float(outputs["logits"].squeeze().item())
+
+        return self.allocation_optimizer.optimize(
+            state,
+            scenario,
+            score_fn=score_candidate,
+            rng=rng,
+            seed_allocations=seed_allocations,
+        )
 
 
 def _std(values: list[float]) -> float:
@@ -404,7 +414,8 @@ def _train_hf_portfolio_model(
             observed_key="label_observed",
             time_key="time_index",
             history_key="history_score",
-            uncertainty_mode="knightian",
+            path_key="path_index",
+            uncertainty_mode=config.uncertainty_mode,
             online_mnar=True,
             assumed_observation_rate=view.result.observation_rate,
         ),
@@ -435,11 +446,12 @@ def _build_hf_benchmark_policies(
             bankruptcy_penalty_per_acre=config.bankruptcy_penalty_per_acre,
         ),
     )
-    benchmark_policies["hf_knightian"] = _HFPortfolioPolicy(
+    learned_policy_name = f"hf_{config.uncertainty_mode}"
+    benchmark_policies[learned_policy_name] = _HFPortfolioPolicy(
         model=trained_model,
         actions=context["actions"],
         crop_model=context["crop_model"],
-        candidate_generator=context["candidate_generator"],
+        allocation_optimizer=context["allocation_optimizer"],
         horizon_years=config.horizon_years,
         seed_policies=tuple(
             context["exploration_policies"][name]
@@ -495,7 +507,7 @@ def run_hf_portfolio_benchmark(
         distressed_observation_rate=view.result.distressed_observation_rate,
         policy_metrics=policy_metrics,
         training_loss=training_loss,
-        learned_policy_name="hf_knightian",
+        learned_policy_name=f"hf_{config.uncertainty_mode}",
     )
 
 
@@ -614,7 +626,7 @@ def run_hf_portfolio_seed_grid_benchmark(
                 distressed_observation_rate=view.result.distressed_observation_rate,
                 policy_metrics=policy_metrics,
                 training_loss=training_loss,
-                learned_policy_name="hf_knightian",
+                learned_policy_name=f"hf_{base_config.uncertainty_mode}",
             )
 
     return HFPortfolioSeedGridResult(
@@ -712,7 +724,7 @@ def format_hf_portfolio_seed_grid_result(result: HFPortfolioSeedGridResult) -> s
     for training_seed in result.training_seeds:
         for evaluation_seed in result.evaluation_seeds:
             run_result = result.grid_results[(training_seed, evaluation_seed)]
-            hf_metrics = run_result.policy_metrics["hf_knightian"]
+            hf_metrics = run_result.policy_metrics[run_result.learned_policy_name]
             lines.append(
                 f"train={training_seed} eval={evaluation_seed}"
                 f" surv={hf_metrics.mean_survival_years:>6.2f}"
@@ -747,6 +759,11 @@ def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
     parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
     parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
     parser.add_argument(
+        "--uncertainty-mode",
+        choices=["group", "score", "time_varying", "knightian", "surprise", "structural_break", "adaptive_v1"],
+        default=HFPortfolioBenchmarkConfig.uncertainty_mode,
+    )
+    parser.add_argument(
         "--view-mode",
         choices=["explicit_missing", "drop_unobserved", "truncate_after_unobserved"],
         default=HFPortfolioBenchmarkConfig.view_mode,
@@ -774,6 +791,7 @@ def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
         learning_rate=args.learning_rate,
         hidden_dim=args.hidden_dim,
         view_mode=args.view_mode,
+        uncertainty_mode=args.uncertainty_mode,
     )
 
 
@@ -804,6 +822,11 @@ def parse_multiseed_args(argv: list[str] | None = None) -> tuple[HFPortfolioBenc
     parser.add_argument("--num-train-epochs", type=int, default=HFPortfolioBenchmarkConfig.num_train_epochs)
     parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
     parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
+    parser.add_argument(
+        "--uncertainty-mode",
+        choices=["group", "score", "time_varying", "knightian", "surprise", "structural_break", "adaptive_v1"],
+        default=HFPortfolioBenchmarkConfig.uncertainty_mode,
+    )
     parser.add_argument(
         "--view-mode",
         choices=["explicit_missing", "drop_unobserved", "truncate_after_unobserved"],
@@ -840,6 +863,7 @@ def parse_multiseed_args(argv: list[str] | None = None) -> tuple[HFPortfolioBenc
             learning_rate=args.learning_rate,
             hidden_dim=args.hidden_dim,
             view_mode=args.view_mode,
+            uncertainty_mode=args.uncertainty_mode,
         ),
         seeds,
     )
@@ -877,6 +901,11 @@ def parse_seed_grid_args(
     parser.add_argument("--num-train-epochs", type=int, default=HFPortfolioBenchmarkConfig.num_train_epochs)
     parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
     parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
+    parser.add_argument(
+        "--uncertainty-mode",
+        choices=["group", "score", "time_varying", "knightian", "surprise", "structural_break", "adaptive_v1"],
+        default=HFPortfolioBenchmarkConfig.uncertainty_mode,
+    )
     parser.add_argument(
         "--view-mode",
         choices=["explicit_missing", "drop_unobserved", "truncate_after_unobserved"],
@@ -924,6 +953,7 @@ def parse_seed_grid_args(
             learning_rate=args.learning_rate,
             hidden_dim=args.hidden_dim,
             view_mode=args.view_mode,
+            uncertainty_mode=args.uncertainty_mode,
         ),
         training_seeds,
         evaluation_seeds,

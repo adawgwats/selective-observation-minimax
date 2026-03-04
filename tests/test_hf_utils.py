@@ -127,6 +127,8 @@ def test_build_adversary_supports_knightian_modes() -> None:
     assert _build_adversary(MinimaxHFConfig(uncertainty_mode="time_varying")).__class__.__name__ == "TimeVaryingObservationAdversary"
     assert _build_adversary(MinimaxHFConfig(uncertainty_mode="knightian")).__class__.__name__ == "KnightianObservationAdversary"
     assert _build_adversary(MinimaxHFConfig(uncertainty_mode="surprise")).__class__.__name__ == "SurpriseDrivenObservationAdversary"
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="structural_break")).__class__.__name__ == "StructuralBreakObservationAdversary"
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="adaptive_v1")).__class__.__name__ == "AutoDiscoveryObservationAdversary"
 
 
 def test_minimax_data_collator_preserves_metadata_and_defaults_observed_mask() -> None:
@@ -266,10 +268,10 @@ def test_build_synthetic_mnar_view_supports_custom_distressed_group_values() -> 
             {"labels": 0.1, "group_id": "south", "path_index": 0, "step_index": 1},
         ],
         config=SyntheticMNARConfig(
-            seed=4,
+            seed=1,
             view_mode="explicit_missing",
-            base_observation_probability=0.95,
-            distressed_penalty=0.8,
+            base_observation_probability=0.8,
+            distressed_penalty=0.95,
         ),
         path_key="path_index",
         step_key="step_index",
@@ -354,11 +356,14 @@ def test_parse_multiseed_args_builds_seed_sequence() -> None:
             "3",
             "--seed-step",
             "2",
+            "--uncertainty-mode",
+            "structural_break",
         ]
     )
 
     assert seeds == (20, 22, 24)
     assert config.seed == 20
+    assert config.uncertainty_mode == "structural_break"
 
 
 def test_parse_seed_grid_args_builds_training_and_eval_sequences() -> None:
@@ -372,10 +377,13 @@ def test_parse_seed_grid_args_builds_training_and_eval_sequences() -> None:
             "40",
             "--eval-seed-count",
             "3",
+            "--uncertainty-mode",
+            "structural_break",
         ]
     )
 
     assert training_seeds == (30, 31)
     assert evaluation_seeds == (40, 41, 42)
+    assert config.uncertainty_mode == "structural_break"
     assert config.training_seed == 30
     assert config.seed == 40

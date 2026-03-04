@@ -4,10 +4,12 @@ from dataclasses import replace
 from typing import Any, Callable, Protocol
 
 from minimax_core import (
+    AutoDiscoveryObservationAdversary,
     GroupSnapshot,
     KnightianObservationAdversary,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    StructuralBreakObservationAdversary,
     SurpriseDrivenObservationAdversary,
     TimeVaryingObservationAdversary,
     compute_score_based_weights,
@@ -71,6 +73,8 @@ def _required_metadata_keys(config: MinimaxHFConfig) -> tuple[str, ...]:
         return (config.time_key,)
     if config.uncertainty_mode in {"knightian", "surprise"}:
         return (config.time_key, config.history_key)
+    if config.uncertainty_mode == "structural_break":
+        return (config.time_key, config.history_key, config.path_key)
     return ()
 
 
@@ -85,6 +89,10 @@ def _build_adversary(config: MinimaxHFConfig) -> Any:
         return KnightianObservationAdversary(config.q1)
     if config.uncertainty_mode == "surprise":
         return SurpriseDrivenObservationAdversary(config.q1)
+    if config.uncertainty_mode == "structural_break":
+        return StructuralBreakObservationAdversary(config.q1)
+    if config.uncertainty_mode == "adaptive_v1":
+        return AutoDiscoveryObservationAdversary(config.q1)
     raise ValueError(f"unsupported uncertainty_mode: {config.uncertainty_mode}")
 
 
@@ -158,14 +166,24 @@ else:
                 if observed_mask_raw is not None
                 else [True] * len(group_ids)
             )
+            time_indices_raw = model_inputs.pop(self.minimax_config.time_key, None)
+            history_scores_raw = model_inputs.pop(self.minimax_config.history_key, None)
+            path_ids_raw = model_inputs.pop(self.minimax_config.path_key, None)
             time_indices = (
-                _normalize_metadata(model_inputs.pop(self.minimax_config.time_key))
-                if self.minimax_config.uncertainty_mode in {"time_varying", "knightian", "surprise"}
+                _normalize_metadata(time_indices_raw)
+                if time_indices_raw is not None
+                and self.minimax_config.uncertainty_mode in {"time_varying", "knightian", "surprise", "structural_break"}
                 else None
             )
             history_scores = (
-                _normalize_metadata(model_inputs.pop(self.minimax_config.history_key))
-                if self.minimax_config.uncertainty_mode in {"knightian", "surprise"}
+                _normalize_metadata(history_scores_raw)
+                if history_scores_raw is not None
+                and self.minimax_config.uncertainty_mode in {"knightian", "surprise", "structural_break"}
+                else None
+            )
+            path_ids = (
+                _normalize_metadata(path_ids_raw)
+                if path_ids_raw is not None and self.minimax_config.uncertainty_mode == "structural_break"
                 else None
             )
 
@@ -207,6 +225,12 @@ else:
                         if model.training
                         else self._adversary.current_q(detached_losses, observation_rate)
                     )
+                elif self.minimax_config.uncertainty_mode == "adaptive_v1":
+                    q_values = (
+                        self._adversary.update(detached_losses, observation_rate, bool_observed_mask)
+                        if model.training
+                        else self._adversary.current_q(detached_losses, observation_rate, bool_observed_mask)
+                    )
                 elif self.minimax_config.uncertainty_mode == "time_varying":
                     if time_indices is None:
                         raise ValueError("time metadata is required for time_varying uncertainty.")
@@ -214,6 +238,31 @@ else:
                         self._adversary.update(detached_losses, observation_rate, [int(v) for v in time_indices])
                         if model.training
                         else self._adversary.current_q(detached_losses, observation_rate, [int(v) for v in time_indices])
+                    )
+                elif self.minimax_config.uncertainty_mode == "structural_break":
+                    if time_indices is None or history_scores is None or path_ids is None:
+                        raise ValueError(
+                            "time, history, and path metadata are required for structural_break uncertainty."
+                        )
+                    time_values = [int(v) for v in time_indices]
+                    history_values = [float(v) for v in history_scores]
+                    path_values = list(path_ids)
+                    q_values = (
+                        self._adversary.update(
+                            detached_losses,
+                            observation_rate,
+                            time_values,
+                            history_values,
+                            path_values,
+                        )
+                        if model.training
+                        else self._adversary.current_q(
+                            detached_losses,
+                            observation_rate,
+                            time_values,
+                            history_values,
+                            path_values,
+                        )
                     )
                 else:
                     if time_indices is None or history_scores is None:

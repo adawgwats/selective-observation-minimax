@@ -121,6 +121,31 @@ class SurpriseAwareObservationUncertaintySet(ObservationUncertaintySet, ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class StructuralBreakAwareObservationUncertaintySet(ObservationUncertaintySet, ABC):
+    @abstractmethod
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        raise NotImplementedError
+
+
 def weighted_mean(values: Sequence[float], weights: Sequence[float]) -> float:
     if len(values) != len(weights):
         raise ValueError("values and weights must have the same length.")
@@ -511,6 +536,103 @@ class SurpriseDrivenObservationSet(SurpriseAwareObservationUncertaintySet):
         return [
             max(1.0 / factor, self.min_projection_weight)
             for factor in self.ambiguity_factors(time_indices, history_scores, surprise_scores)
+        ]
+
+
+@dataclass(frozen=True)
+class StructuralBreakObservationSet(StructuralBreakAwareObservationUncertaintySet):
+    time_strength: float = 0.2
+    history_strength: float = 0.45
+    break_strength: float = 1.8
+    min_projection_weight: float = 0.12
+
+    def __post_init__(self) -> None:
+        if self.time_strength < 0.0:
+            raise ValueError("time_strength must be nonnegative.")
+        if self.history_strength < 0.0:
+            raise ValueError("history_strength must be nonnegative.")
+        if self.break_strength < 0.0:
+            raise ValueError("break_strength must be nonnegative.")
+        if not 0.0 < self.min_projection_weight <= 1.0:
+            raise ValueError("min_projection_weight must be in (0, 1].")
+
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        if count <= 0:
+            raise ValueError("count must be positive.")
+        if len(time_indices) != count or len(history_scores) != count or len(break_scores) != count:
+            raise ValueError("time_indices, history_scores, and break_scores must match count.")
+        initial = [observation_rate for _ in range(count)]
+        return self.project(
+            initial,
+            observation_rate,
+            time_indices,
+            history_scores,
+            break_scores,
+        )
+
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        count = len(proposed_q)
+        if count <= 0:
+            raise ValueError("at least one proposed q value is required.")
+        if len(time_indices) != count or len(history_scores) != count or len(break_scores) != count:
+            raise ValueError("time_indices, history_scores, and break_scores must match proposed_q.")
+        projection_weights = self.projection_weights(time_indices, history_scores, break_scores)
+        lower_bounds = [self.config.q_min for _ in range(count)]
+        upper_bounds = [self.config.q_max for _ in range(count)]
+        return project_to_boxed_weighted_mean(
+            values=proposed_q,
+            weights=projection_weights,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+            target_mean=observation_rate,
+            tolerance=self.config.projection_tolerance,
+            max_iterations=self.config.projection_max_iterations,
+        )
+
+    def ambiguity_factors(
+        self,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        normalized_time = TimeVaryingObservationSet._normalize_time_indices(time_indices)
+        normalized_history = normalize_context_scores(history_scores, label="history_scores")
+        normalized_breaks = normalize_context_scores(break_scores, label="break_scores")
+        return [
+            1.0
+            + self.time_strength * time_score
+            + self.history_strength * history_score
+            + self.break_strength * break_score
+            for time_score, history_score, break_score in zip(
+                normalized_time,
+                normalized_history,
+                normalized_breaks,
+            )
+        ]
+
+    def projection_weights(
+        self,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        break_scores: Sequence[float],
+    ) -> list[float]:
+        return [
+            max(1.0 / factor, self.min_projection_weight)
+            for factor in self.ambiguity_factors(time_indices, history_scores, break_scores)
         ]
 
 

@@ -10,6 +10,8 @@ from .uncertainty import (
     GroupedObservationUncertaintySet,
     HistoryAwareObservationUncertaintySet,
     KnightianObservationSet,
+    StructuralBreakAwareObservationUncertaintySet,
+    StructuralBreakObservationSet,
     SurpriseAwareObservationUncertaintySet,
     SurpriseDrivenObservationSet,
     ScoreBasedObservationSet,
@@ -18,6 +20,7 @@ from .uncertainty import (
     TimeVaryingObservationSet,
     TimeVaryingObservationUncertaintySet,
 )
+from .structural_breaks import RupturesStructuralBreakDetector
 
 
 GroupId = Hashable
@@ -336,4 +339,238 @@ class SurpriseDrivenObservationAdversary(ObservationAdversary):
             or len(history_scores) != len(scores)
             or len(self._expected_scores) != len(scores)
             or len(self._surprise_scores) != len(scores)
+        )
+
+
+@dataclass
+class AutoDiscoveryObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: SurpriseAwareObservationUncertaintySet | None = None
+    score_decay: float = 0.85
+    history_decay: float = 0.92
+    _q_values: list[float] = field(default_factory=list)
+    _seen_examples: int = 0
+    _expected_score: float = 0.0
+    _surprise_state: float = 0.0
+    _history_state: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.uncertainty_set is None:
+            self.uncertainty_set = SurpriseDrivenObservationSet(self.config)
+        if not 0.0 <= self.score_decay < 1.0:
+            raise ValueError("score_decay must be in [0, 1).")
+        if not 0.0 <= self.history_decay < 1.0:
+            raise ValueError("history_decay must be in [0, 1).")
+
+    def current_q(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        observed_mask: list[bool],
+    ) -> list[float]:
+        time_indices, history_scores, surprise_scores = self._build_context(
+            scores,
+            observed_mask,
+            mutate=False,
+        )
+        return self._current_q_with_context(
+            scores,
+            observation_rate,
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+
+    def update(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        observed_mask: list[bool],
+    ) -> list[float]:
+        time_indices, history_scores, surprise_scores = self._build_context(
+            scores,
+            observed_mask,
+            mutate=False,
+        )
+        current_q = self._current_q_with_context(
+            scores,
+            observation_rate,
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        ambiguity_factors = self.uncertainty_set.ambiguity_factors(
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+        proposed_q: list[float] = []
+
+        for q_value, score, ambiguity_factor in zip(current_q, scaled_scores, ambiguity_factors):
+            gradient = -(score * ambiguity_factor) / max(q_value, self.config.epsilon) ** 2
+            proposed_q.append(q_value + self.config.adversary_step_size * gradient)
+
+        self._q_values = self.uncertainty_set.project(
+            proposed_q,
+            observation_rate,
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+        self._build_context(scores, observed_mask, mutate=True)
+        return list(self._q_values)
+
+    def _current_q_with_context(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+        surprise_scores: list[float],
+    ) -> list[float]:
+        if self._needs_initialization(scores):
+            self._q_values = self.uncertainty_set.initialize(
+                len(scores),
+                observation_rate,
+                time_indices,
+                history_scores,
+                surprise_scores,
+            )
+        return list(self._q_values)
+
+    def _build_context(
+        self,
+        scores: list[float],
+        observed_mask: list[bool],
+        *,
+        mutate: bool,
+    ) -> tuple[list[int], list[float], list[float]]:
+        if len(scores) != len(observed_mask):
+            raise ValueError("scores and observed_mask must have the same length.")
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        time_indices = list(range(self._seen_examples, self._seen_examples + len(scores)))
+
+        expected_score = self._expected_score
+        surprise_state = self._surprise_state
+        history_state = self._history_state
+        history_scores: list[float] = []
+        surprise_scores: list[float] = []
+
+        for score, observed in zip(scaled_scores, observed_mask):
+            history_scores.append(history_state)
+            innovation = abs(score - expected_score)
+            surprise_state = self.score_decay * surprise_state + (1.0 - self.score_decay) * innovation
+            surprise_scores.append(surprise_state)
+            hidden_signal = 0.0 if observed else 1.0
+            history_signal = innovation + hidden_signal
+            history_state = self.history_decay * history_state + (1.0 - self.history_decay) * history_signal
+            expected_score = self.score_decay * expected_score + (1.0 - self.score_decay) * score
+
+        if mutate:
+            self._seen_examples += len(scores)
+            self._expected_score = expected_score
+            self._surprise_state = surprise_state
+            self._history_state = history_state
+        return time_indices, history_scores, surprise_scores
+
+    def _needs_initialization(self, scores: list[float]) -> bool:
+        return len(self._q_values) != len(scores)
+
+
+@dataclass
+class StructuralBreakObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: StructuralBreakAwareObservationUncertaintySet | None = None
+    detector: RupturesStructuralBreakDetector | None = None
+    break_persistence: float = 0.8
+    _q_values: list[float] = field(default_factory=list)
+    _break_scores: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.uncertainty_set is None:
+            self.uncertainty_set = StructuralBreakObservationSet(self.config)
+        if self.detector is None:
+            self.detector = RupturesStructuralBreakDetector()
+        if not 0.0 <= self.break_persistence < 1.0:
+            raise ValueError("break_persistence must be in [0, 1).")
+
+    def current_q(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+        path_ids: list[Hashable],
+    ) -> list[float]:
+        if self._needs_initialization(scores, time_indices, history_scores, path_ids):
+            zeros = [0.0 for _ in scores]
+            self._q_values = self.uncertainty_set.initialize(
+                len(scores),
+                observation_rate,
+                time_indices,
+                history_scores,
+                zeros,
+            )
+            self._break_scores = zeros
+        return list(self._q_values)
+
+    def update(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+        path_ids: list[Hashable],
+    ) -> list[float]:
+        current_q = self.current_q(scores, observation_rate, time_indices, history_scores, path_ids)
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        detected_breaks = list(
+            self.detector.detect(scaled_scores, time_indices, path_ids).break_scores
+        )
+        break_scores = self._update_break_state(detected_breaks)
+        ambiguity_factors = self.uncertainty_set.ambiguity_factors(
+            time_indices,
+            history_scores,
+            break_scores,
+        )
+        proposed_q: list[float] = []
+        for q_value, score, ambiguity_factor in zip(current_q, scaled_scores, ambiguity_factors):
+            gradient = -(score * ambiguity_factor) / max(q_value, self.config.epsilon) ** 2
+            proposed_q.append(q_value + self.config.adversary_step_size * gradient)
+
+        self._q_values = self.uncertainty_set.project(
+            proposed_q,
+            observation_rate,
+            time_indices,
+            history_scores,
+            break_scores,
+        )
+        return list(self._q_values)
+
+    def current_break_scores(self) -> list[float]:
+        return list(self._break_scores)
+
+    def _update_break_state(self, detected_breaks: list[float]) -> list[float]:
+        if not self._break_scores:
+            self._break_scores = [0.0 for _ in detected_breaks]
+        self._break_scores = [
+            self.break_persistence * prior + (1.0 - self.break_persistence) * current
+            for prior, current in zip(self._break_scores, detected_breaks)
+        ]
+        return list(self._break_scores)
+
+    def _needs_initialization(
+        self,
+        scores: list[float],
+        time_indices: list[int],
+        history_scores: list[float],
+        path_ids: list[Hashable],
+    ) -> bool:
+        return (
+            len(self._q_values) != len(scores)
+            or len(time_indices) != len(scores)
+            or len(history_scores) != len(scores)
+            or len(path_ids) != len(scores)
+            or len(self._break_scores) != len(scores)
         )

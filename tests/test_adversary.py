@@ -1,8 +1,11 @@
 from minimax_core import (
+    AutoDiscoveryObservationAdversary,
     KnightianObservationAdversary,
     Q1ObjectiveConfig,
+    RupturesStructuralBreakDetector,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    StructuralBreakObservationAdversary,
     SurpriseDrivenObservationAdversary,
     TimeVaryingObservationAdversary,
     estimate_group_snapshot,
@@ -102,4 +105,48 @@ def test_surprise_adversary_accumulates_residual_shocks() -> None:
     surprise_scores = adversary.current_surprise_scores()
 
     assert surprise_scores[-1] > surprise_scores[0]
+    assert updated_q[-1] < updated_q[0]
+
+
+def test_auto_discovery_adversary_accumulates_online_state() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = AutoDiscoveryObservationAdversary(config, score_decay=0.5, history_decay=0.5)
+    observation_rate = 0.6
+
+    initial_q = adversary.current_q([0.2, 0.2, 0.2, 0.2], observation_rate, [True, True, True, True])
+    updated_q = adversary.update([0.2, 0.2, 0.2, 1.2], observation_rate, [True, True, True, False])
+
+    assert adversary._seen_examples == 4
+    assert adversary._surprise_state > 0.0
+    assert adversary._history_state > 0.0
+    assert updated_q[-1] < initial_q[-1]
+
+
+def test_structural_break_detector_marks_post_break_examples() -> None:
+    detector = RupturesStructuralBreakDetector(min_size=2, min_normalized_shift=0.1, break_decay=0.9)
+    result = detector.detect(
+        scores=[0.1, 0.1, 0.1, 1.0, 1.0, 1.0],
+        time_indices=[0, 1, 2, 3, 4, 5],
+        path_ids=[0, 0, 0, 0, 0, 0],
+    )
+
+    assert max(result.break_scores[:3]) == 0.0
+    assert max(result.break_scores[3:]) > 0.0
+    assert result.breakpoints
+
+
+def test_structural_break_adversary_downweights_post_break_examples_more() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = StructuralBreakObservationAdversary(config)
+    scores = [0.2, 0.2, 0.2, 1.1, 1.1, 1.1]
+    time_indices = [0, 1, 2, 3, 4, 5]
+    history_scores = [0.0, 0.0, 0.2, 0.4, 0.6, 0.8]
+    path_ids = [0, 0, 0, 0, 0, 0]
+    observation_rate = 0.6
+
+    updated_q = adversary.update(scores, observation_rate, time_indices, history_scores, path_ids)
+    break_scores = adversary.current_break_scores()
+
+    assert max(break_scores[:3]) == 0.0
+    assert max(break_scores[3:]) > 0.0
     assert updated_q[-1] < updated_q[0]

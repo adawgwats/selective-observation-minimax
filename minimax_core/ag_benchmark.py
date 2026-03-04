@@ -25,6 +25,7 @@ from .gradient_validation import (
     train_robust_group_online,
     train_robust_knightian,
     train_robust_score,
+    train_robust_structural_break,
     train_robust_surprise,
     train_robust_time_varying,
 )
@@ -42,6 +43,7 @@ AG_METHOD_ORDER = (
     "robust_score",
     "robust_time_varying",
     "robust_knightian",
+    "robust_structural_break",
     "robust_surprise",
     "oracle",
 )
@@ -80,6 +82,7 @@ class AgricultureBenchmarkConfig:
     include_online_mnar_baseline: bool = True
     include_time_varying_baseline: bool = True
     include_knightian_baseline: bool = True
+    include_structural_break_baseline: bool = True
     include_surprise_baseline: bool = True
     assumed_observation_rate: float | None = None
     q1: Q1ObjectiveConfig = field(default_factory=Q1ObjectiveConfig)
@@ -468,6 +471,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
     train_observed_values = [mnar_result.observed_values[index] for index in retained_indices]
     train_time_indices = [latent_train_step_indices[index] for index in retained_indices]
     train_history_scores = [latent_history_scores[index] for index in retained_indices]
+    train_path_ids = [latent_train_path_indices[index] for index in retained_indices]
     train_proxy_labels = build_proxy_labels(
         observed_values=train_observed_values,
         group_ids=train_group_ids,
@@ -490,6 +494,7 @@ def _build_agriculture_dataset(config: AgricultureBenchmarkConfig, *, trial_inde
         train_observed_mask=train_observed_mask,
         train_time_indices=train_time_indices,
         train_history_scores=train_history_scores,
+        train_path_ids=train_path_ids,
         test_features=test_features,
         test_labels=test_labels,
         stable_observation_probability=mnar_result.stable_observation_rate,
@@ -840,6 +845,7 @@ def _train_agriculture_methods(
     robust_score_config = _robust_config_for_ag(config, adversary_mode="score")
     robust_time_varying_config = _robust_config_for_ag(config, adversary_mode="time_varying")
     robust_knightian_config = _robust_config_for_ag(config, adversary_mode="knightian")
+    robust_structural_break_config = _robust_config_for_ag(config, adversary_mode="structural_break")
     robust_surprise_config = _robust_config_for_ag(config, adversary_mode="surprise")
 
     method_parameters: dict[str, list[float]] = {
@@ -870,6 +876,11 @@ def _train_agriculture_methods(
         method_parameters["robust_knightian"] = train_robust_knightian(
             dataset.linear,
             robust_knightian_config,
+        )
+    if config.include_structural_break_baseline:
+        method_parameters["robust_structural_break"] = train_robust_structural_break(
+            dataset.linear,
+            robust_structural_break_config,
         )
     if config.include_surprise_baseline:
         method_parameters["robust_surprise"] = train_robust_surprise(
@@ -1377,6 +1388,7 @@ def _add_common_ag_benchmark_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exclude-online-mnar-baseline", action="store_true")
     parser.add_argument("--exclude-time-varying-baseline", action="store_true")
     parser.add_argument("--exclude-knightian-baseline", action="store_true")
+    parser.add_argument("--exclude-structural-break-baseline", action="store_true")
     parser.add_argument("--exclude-surprise-baseline", action="store_true")
     parser.add_argument("--assumed-observation-rate", type=float, default=None)
 
@@ -1413,6 +1425,7 @@ def _config_from_namespace(args: argparse.Namespace) -> AgricultureBenchmarkConf
         include_online_mnar_baseline=not args.exclude_online_mnar_baseline,
         include_time_varying_baseline=not args.exclude_time_varying_baseline,
         include_knightian_baseline=not args.exclude_knightian_baseline,
+        include_structural_break_baseline=not args.exclude_structural_break_baseline,
         include_surprise_baseline=not args.exclude_surprise_baseline,
         assumed_observation_rate=args.assumed_observation_rate,
         q1=Q1ObjectiveConfig(

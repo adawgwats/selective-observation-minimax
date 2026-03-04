@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from statistics import mean
 
 from .adversary import (
+    StructuralBreakObservationAdversary,
     KnightianObservationAdversary,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
@@ -19,6 +20,8 @@ from .objectives import (
     compute_score_based_weights,
     estimate_group_snapshot,
 )
+
+GRADIENT_VALIDATION_SCENARIOS = (*VALIDATION_SCENARIOS, "late_regime_break")
 
 
 @dataclass(frozen=True)
@@ -48,11 +51,11 @@ class GradientValidationConfig:
     def __post_init__(self) -> None:
         if self.trials <= 0:
             raise ValueError("trials must be positive.")
-        if self.scenario not in VALIDATION_SCENARIOS:
-            raise ValueError(f"scenario must be one of {VALIDATION_SCENARIOS}.")
-        if self.adversary_mode not in {"group", "score", "time_varying", "knightian", "surprise"}:
+        if self.scenario not in GRADIENT_VALIDATION_SCENARIOS:
+            raise ValueError(f"scenario must be one of {GRADIENT_VALIDATION_SCENARIOS}.")
+        if self.adversary_mode not in {"group", "score", "time_varying", "knightian", "surprise", "structural_break"}:
             raise ValueError(
-                "adversary_mode must be 'group', 'score', 'time_varying', 'knightian', or 'surprise'."
+                "adversary_mode must be 'group', 'score', 'time_varying', 'knightian', 'surprise', or 'structural_break'."
             )
         if self.learning_rate <= 0.0:
             raise ValueError("learning_rate must be positive.")
@@ -88,6 +91,7 @@ class LinearDataset:
     train_observed_mask: list[bool]
     train_time_indices: list[int]
     train_history_scores: list[float]
+    train_path_ids: list[int]
     test_features: list[list[float]]
     test_labels: list[float]
     stable_observation_probability: float
@@ -211,6 +215,40 @@ def _clip_observation_rate(rate: float, config: GradientValidationConfig) -> flo
     return min(max(rate, config.q1.q_min), config.q1.q_max)
 
 
+def _build_sequence_indices(count: int) -> tuple[list[int], list[int]]:
+    if count <= 0:
+        raise ValueError("count must be positive.")
+    path_length = max(8, min(16, max(4, count // 6)))
+    time_indices = [index % path_length for index in range(count)]
+    path_ids = [index // path_length for index in range(count)]
+    return time_indices, path_ids
+
+
+def _build_history_scores(
+    labels: list[float],
+    observed_mask: list[bool],
+    path_ids: list[int],
+    time_indices: list[int],
+) -> list[float]:
+    history_scores = [0.0 for _ in labels]
+    grouped_indices: dict[int, list[int]] = {}
+    for index, path_id in enumerate(path_ids):
+        grouped_indices.setdefault(path_id, []).append(index)
+
+    for indices in grouped_indices.values():
+        ordered_indices = sorted(indices, key=lambda index: (time_indices[index], index))
+        cumulative_distress = 0.0
+        for index in ordered_indices:
+            history_scores[index] = cumulative_distress
+            distress_signal = 0.0
+            if labels[index] < 0.0:
+                distress_signal += 1.0
+            if not observed_mask[index]:
+                distress_signal += 1.0
+            cumulative_distress += distress_signal
+    return history_scores
+
+
 def _generate_split(
     rng: random.Random,
     count: int,
@@ -241,11 +279,25 @@ def _generate_split(
     stable_probabilities: list[float] = []
     distressed_probabilities: list[float] = []
 
-    for _ in range(count):
+    time_indices, _path_ids = _build_sequence_indices(count)
+    path_length = max(time_indices) + 1 if time_indices else 1
+
+    for example_index in range(count):
         is_distressed = rng.random() < 0.5
         x_value = rng.gauss(0.0, 1.0)
         group_indicator = 1.0 if is_distressed else 0.0
-        label = intercept + slope * x_value + group_effect * group_indicator + rng.gauss(0.0, noise_std)
+        local_time = time_indices[example_index]
+        post_break = scenario == "late_regime_break" and local_time >= path_length // 2
+        effective_intercept = intercept + (0.18 if post_break else 0.0)
+        effective_slope = slope + (0.12 if post_break else 0.0)
+        effective_group_effect = group_effect + (0.22 if post_break else 0.0)
+        effective_noise_std = noise_std * (1.35 if post_break else 1.0)
+        label = (
+            effective_intercept
+            + effective_slope * x_value
+            + effective_group_effect * group_indicator
+            + rng.gauss(0.0, effective_noise_std)
+        )
         features.append([1.0, x_value, group_indicator])
         labels.append(label)
         proxy_labels.append(label + rng.gauss(0.0, proxy_noise_std))
@@ -267,6 +319,13 @@ def _generate_split(
                 intercept,
                 group_effect,
                 label_penalty,
+            )
+        elif scenario == "late_regime_break":
+            base_probability = distressed_obs_prob if is_distressed else stable_obs_prob
+            post_break_penalty = 0.22 if post_break else 0.0
+            observation_probability = min(
+                max(base_probability - post_break_penalty - 0.12 * group_indicator, 0.05),
+                1.0,
             )
         else:
             observation_probability = distressed_obs_prob if is_distressed else stable_obs_prob
@@ -306,9 +365,14 @@ def generate_linear_dataset(
     elif config.scenario == "group_agnostic":
         stable_obs_prob, distressed_obs_prob = _agnostic_group_probability(rng, config)
         label_penalty = 0.0
-    else:
+    elif config.scenario == "label_dependent":
         stable_obs_prob, distressed_obs_prob = _aligned_group_probability(rng, config)
         label_penalty = _uniform_float(rng, config.label_penalty_range)
+    else:
+        stable_obs_prob, distressed_obs_prob = _aligned_group_probability(rng, config)
+        stable_obs_prob = min(stable_obs_prob, 0.85)
+        distressed_obs_prob = min(distressed_obs_prob, 0.40)
+        label_penalty = 0.0
 
     (
         train_features,
@@ -371,14 +435,23 @@ def generate_linear_dataset(
                 train_observed_mask[index] = True
                 break
 
+    train_time_indices, train_path_ids = _build_sequence_indices(len(train_features))
+    history_scores = _build_history_scores(
+        train_labels,
+        train_observed_mask,
+        train_path_ids,
+        train_time_indices,
+    )
+
     dataset = LinearDataset(
         train_features=train_features,
         train_labels=train_labels,
         train_proxy_labels=train_proxy_labels,
         train_group_ids=train_group_ids,
         train_observed_mask=train_observed_mask,
-        train_time_indices=[0 for _ in train_features],
-        train_history_scores=[0.0 for _ in train_features],
+        train_time_indices=train_time_indices,
+        train_history_scores=history_scores,
+        train_path_ids=train_path_ids,
         test_features=test_features,
         test_labels=test_labels,
         stable_observation_probability=mean(stable_probabilities),
@@ -409,6 +482,8 @@ def train_robust(dataset: LinearDataset, config: GradientValidationConfig) -> li
         return train_robust_time_varying(dataset, config)
     if config.adversary_mode == "knightian":
         return train_robust_knightian(dataset, config)
+    if config.adversary_mode == "structural_break":
+        return train_robust_structural_break(dataset, config)
     return train_robust_surprise(dataset, config)
 
 
@@ -608,6 +683,54 @@ def train_robust_surprise(dataset: LinearDataset, config: GradientValidationConf
     return parameters
 
 
+def train_robust_structural_break(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
+    parameters = [0.0 for _ in dataset.train_features[0]]
+    adversary = StructuralBreakObservationAdversary(config.q1)
+    observation_rate = sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
+    if config.assumed_observation_rate is not None:
+        observation_rate = config.assumed_observation_rate
+    observation_rate = _clip_observation_rate(observation_rate, config)
+    time_indices = dataset.train_time_indices
+    history_scores = dataset.train_history_scores
+    path_ids = dataset.train_path_ids
+    if len(time_indices) != len(dataset.train_features):
+        raise ValueError("train_time_indices must match train_features length.")
+    if len(history_scores) != len(dataset.train_features):
+        raise ValueError("train_history_scores must match train_features length.")
+    if len(path_ids) != len(dataset.train_features):
+        raise ValueError("train_path_ids must match train_features length.")
+
+    for _ in range(config.epochs):
+        predictions = _predict(parameters, dataset.train_features)
+        losses = [(prediction - label) ** 2 for prediction, label in zip(predictions, dataset.train_labels)]
+        proxy_losses = [
+            (prediction - proxy_label) ** 2
+            for prediction, proxy_label in zip(predictions, dataset.train_proxy_labels)
+        ]
+        effective_scores = [
+            actual_loss if observed else proxy_loss
+            for actual_loss, proxy_loss, observed in zip(
+                losses,
+                proxy_losses,
+                dataset.train_observed_mask,
+            )
+        ]
+        q_values = adversary.update(
+            effective_scores,
+            observation_rate,
+            time_indices,
+            history_scores,
+            path_ids,
+        )
+        weights = compute_score_based_weights(dataset.train_observed_mask, q_values)
+        gradients = _weighted_gradient(parameters, dataset.train_features, dataset.train_labels, weights)
+        parameters = [
+            parameter - config.learning_rate * gradient
+            for parameter, gradient in zip(parameters, gradients)
+        ]
+    return parameters
+
+
 def train_robust_group_online(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
     return train_robust_group(dataset, replace(config, online_mnar=True))
 
@@ -700,7 +823,7 @@ def run_gradient_validation(
 
 def run_gradient_validation_suite(
     config: GradientValidationConfig,
-    scenarios: tuple[str, ...] = VALIDATION_SCENARIOS,
+    scenarios: tuple[str, ...] = GRADIENT_VALIDATION_SCENARIOS,
 ) -> dict[str, GradientValidationSummary]:
     summaries: dict[str, GradientValidationSummary] = {}
     for scenario in scenarios:
@@ -737,12 +860,12 @@ def parse_args(argv: list[str] | None = None) -> GradientValidationConfig:
     )
     parser.add_argument(
         "--scenario",
-        choices=[*VALIDATION_SCENARIOS, "suite"],
+        choices=[*GRADIENT_VALIDATION_SCENARIOS, "suite"],
         default=GradientValidationConfig.scenario,
     )
     parser.add_argument(
         "--adversary-mode",
-        choices=["group", "score", "time_varying", "knightian", "surprise"],
+        choices=["group", "score", "time_varying", "knightian", "surprise", "structural_break"],
         default=GradientValidationConfig.adversary_mode,
     )
     parser.add_argument("--seed", type=int, default=GradientValidationConfig.seed)

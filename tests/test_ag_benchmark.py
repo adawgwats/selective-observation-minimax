@@ -372,6 +372,7 @@ def test_real_agriculture_benchmark_runs_for_nondefault_benchmark(tmp_path) -> N
     assert summary.benchmark_name == "georgia_soybean"
     assert summary.methods["robust_group"].mean_test_rmse >= 0.0
     assert summary.methods["robust_group_online"].mean_test_rmse >= 0.0
+    assert summary.methods["robust_structural_break"].mean_test_rmse >= 0.0
     assert summary.methods["robust_surprise"].mean_test_rmse >= 0.0
     assert summary.methods["robust_group"].mean_survival_years >= 0.0
     assert 0.0 <= summary.methods["robust_group"].mean_bankruptcy_rate <= 1.0

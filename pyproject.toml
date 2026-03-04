@@ -12,7 +12,9 @@ license = { text = "MIT" }
 authors = [
   { name = "Andrew Watson" }
 ]
-dependencies = []
+dependencies = [
+  "ruptures>=1.1.10",
+]
 
 [project.optional-dependencies]
 hf = [
