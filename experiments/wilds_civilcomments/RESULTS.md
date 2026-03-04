@@ -70,3 +70,30 @@ Current takeaway:
 - `0.75` is the strongest auto-discovery run so far on this setup
 - the best auto run now beats ERM on test worst-group accuracy by `+0.0682` absolute
 - validation worst-group accuracy still ties ERM, so this remains promising rather than submission-ready
+
+## March 4, 2026 5-Seed Protocol Run
+
+To mirror the WILDS CivilComments submission protocol, both methods were re-run with 5 seeds
+(`17, 23, 29, 31, 37`) using:
+
+- `experiments/wilds_civilcomments/multiseed.py`
+- `experiments/wilds_civilcomments/configs/midscale_auto_v1_rate_0p75.yaml`
+- `experiments/wilds_civilcomments/configs/midscale_erm.yaml`
+
+Artifacts:
+
+- auto summary: `outputs/wilds_civilcomments/midscale_auto_v1_rate_0p75_multiseed/multiseed_summary.json`
+- ERM summary: `outputs/wilds_civilcomments/midscale_erm_multiseed/multiseed_summary.json`
+
+5-seed summary (mean +/- sample std):
+
+| Run | Val acc_avg | Val acc_wg | Test acc_avg | Test acc_wg |
+| --- | ---: | ---: | ---: | ---: |
+| `robust_auto_v1` (`assumed_observation_rate=0.75`) | `0.9198 +/- 0.0065` | `0.4069 +/- 0.0724` | `0.9207 +/- 0.0060` | `0.5973 +/- 0.0430` |
+| `erm` | `0.9199 +/- 0.0064` | `0.3957 +/- 0.0603` | `0.9220 +/- 0.0059` | `0.5909 +/- 0.0759` |
+
+Interpretation:
+
+- under 5-seed averaging, auto-discovery is no longer a single-seed anomaly
+- auto-discovery is slightly better than ERM on worst-group accuracy in both val and test means
+- the absolute gap is still small, and the variability is high, so this is progress but not top-leaderboard performance

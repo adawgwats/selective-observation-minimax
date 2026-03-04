@@ -31,6 +31,15 @@ python experiments/wilds_civilcomments/train.py --config experiments/wilds_civil
 python experiments/wilds_civilcomments/train.py --config experiments/wilds_civilcomments/configs/pilot_auto_v1.yaml
 ```
 
+Run leaderboard-style 5-seed sweeps with:
+
+```bash
+python experiments/wilds_civilcomments/multiseed.py --config experiments/wilds_civilcomments/configs/midscale_auto_v1_rate_0p75.yaml
+python experiments/wilds_civilcomments/multiseed.py --config experiments/wilds_civilcomments/configs/midscale_erm.yaml
+```
+
+Each sweep writes a `multiseed_summary.json` artifact under `<config.output_dir>_multiseed/`.
+
 Evaluate a saved checkpoint with:
 
 ```bash
