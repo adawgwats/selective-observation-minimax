@@ -42,3 +42,5 @@ Compare saved metrics artifacts with:
 ```bash
 python experiments/wilds_civilcomments/report.py --metrics outputs/wilds_civilcomments/smoke_erm/metrics.json outputs/wilds_civilcomments/smoke_robust_group/metrics.json
 ```
+
+Tracked benchmark summaries live in `experiments/wilds_civilcomments/RESULTS.md`.
