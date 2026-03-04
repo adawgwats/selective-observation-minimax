@@ -4,6 +4,7 @@ import argparse
 import random
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import mean, pstdev
 from typing import Any
 
 from minimax_hf import MinimaxHFConfig, MinimaxTrainer, build_synthetic_mnar_view
@@ -20,12 +21,12 @@ class HFPortfolioBenchmarkConfig:
     horizon_years: int = 100
     workspace_root: str = "dssat_runs/hf_portfolio_benchmark"
     output_dir: str = "outputs/hf_portfolio_trainer"
-    initial_cash: float = 500_000.0
+    initial_cash: float = 250_000.0
     initial_debt: float = 0.0
-    initial_credit_limit: float = 300_000.0
+    initial_credit_limit: float = 175_000.0
     acres: float = 200.0
-    land_value_per_acre: float = 4_000.0
-    land_financed_fraction: float = 0.5
+    land_value_per_acre: float = 5_860.0
+    land_financed_fraction: float = 0.2
     land_mortgage_rate: float = 0.045
     land_mortgage_years: int = 30
     land_mortgage_grace_years: int = 2
@@ -56,6 +57,28 @@ class HFPortfolioBenchmarkResult:
     policy_metrics: dict[str, Any]
     training_loss: float | None
     learned_policy_name: str
+
+
+@dataclass(frozen=True)
+class HFPortfolioMultiSeedPolicySummary:
+    mean_survival_years: float
+    survival_years_std: float
+    mean_full_horizon_survival_rate: float
+    full_horizon_survival_rate_std: float
+    mean_bankruptcy_rate: float
+    bankruptcy_rate_std: float
+    mean_terminal_wealth: float
+    terminal_wealth_std: float
+    mean_cumulative_profit: float
+    cumulative_profit_std: float
+
+
+@dataclass(frozen=True)
+class HFPortfolioMultiSeedResult:
+    base_config: HFPortfolioBenchmarkConfig
+    seeds: tuple[int, ...]
+    seed_results: dict[int, HFPortfolioBenchmarkResult]
+    policy_summaries: dict[str, HFPortfolioMultiSeedPolicySummary]
 
 
 class _TabularCollator:
@@ -319,6 +342,12 @@ class _HFPortfolioPolicy:
         return candidates[best_index]
 
 
+def _std(values: list[float]) -> float:
+    if len(values) <= 1:
+        return 0.0
+    return pstdev(values)
+
+
 def run_hf_portfolio_benchmark(
     config: HFPortfolioBenchmarkConfig,
 ) -> HFPortfolioBenchmarkResult:
@@ -426,6 +455,74 @@ def run_hf_portfolio_benchmark(
     )
 
 
+def _aggregate_multiseed_policy_metrics(
+    seed_results: dict[int, HFPortfolioBenchmarkResult],
+) -> dict[str, HFPortfolioMultiSeedPolicySummary]:
+    if not seed_results:
+        raise ValueError("seed_results must not be empty.")
+
+    policy_names = sorted(
+        {
+            policy_name
+            for result in seed_results.values()
+            for policy_name in result.policy_metrics
+        }
+    )
+    summaries: dict[str, HFPortfolioMultiSeedPolicySummary] = {}
+    for policy_name in policy_names:
+        metrics_list = [
+            result.policy_metrics[policy_name]
+            for result in seed_results.values()
+            if policy_name in result.policy_metrics
+        ]
+        mean_survival_years = [float(metrics.mean_survival_years) for metrics in metrics_list]
+        full_horizon_survival_rate = [float(metrics.full_horizon_survival_rate) for metrics in metrics_list]
+        bankruptcy_rate = [float(metrics.bankruptcy_rate) for metrics in metrics_list]
+        mean_terminal_wealth = [float(metrics.mean_terminal_wealth) for metrics in metrics_list]
+        mean_cumulative_profit = [float(metrics.mean_cumulative_profit) for metrics in metrics_list]
+        summaries[policy_name] = HFPortfolioMultiSeedPolicySummary(
+            mean_survival_years=mean(mean_survival_years),
+            survival_years_std=_std(mean_survival_years),
+            mean_full_horizon_survival_rate=mean(full_horizon_survival_rate),
+            full_horizon_survival_rate_std=_std(full_horizon_survival_rate),
+            mean_bankruptcy_rate=mean(bankruptcy_rate),
+            bankruptcy_rate_std=_std(bankruptcy_rate),
+            mean_terminal_wealth=mean(mean_terminal_wealth),
+            terminal_wealth_std=_std(mean_terminal_wealth),
+            mean_cumulative_profit=mean(mean_cumulative_profit),
+            cumulative_profit_std=_std(mean_cumulative_profit),
+        )
+    return summaries
+
+
+def run_hf_portfolio_multiseed_benchmark(
+    base_config: HFPortfolioBenchmarkConfig,
+    *,
+    seeds: tuple[int, ...],
+) -> HFPortfolioMultiSeedResult:
+    if not seeds:
+        raise ValueError("seeds must not be empty.")
+
+    seed_results: dict[int, HFPortfolioBenchmarkResult] = {}
+    for seed in seeds:
+        per_seed_config = HFPortfolioBenchmarkConfig(
+            **{
+                **base_config.__dict__,
+                "seed": seed,
+                "workspace_root": str(Path(base_config.workspace_root) / f"seed_{seed}"),
+                "output_dir": str(Path(base_config.output_dir) / f"seed_{seed}"),
+            }
+        )
+        seed_results[seed] = run_hf_portfolio_benchmark(per_seed_config)
+
+    return HFPortfolioMultiSeedResult(
+        base_config=base_config,
+        seeds=tuple(seeds),
+        seed_results=seed_results,
+        policy_summaries=_aggregate_multiseed_policy_metrics(seed_results),
+    )
+
+
 def format_hf_portfolio_benchmark_result(result: HFPortfolioBenchmarkResult) -> str:
     lines = [
         "HF Knightian portfolio benchmark",
@@ -451,6 +548,40 @@ def format_hf_portfolio_benchmark_result(result: HFPortfolioBenchmarkResult) -> 
     return "\n".join(lines)
 
 
+def format_hf_portfolio_multiseed_result(result: HFPortfolioMultiSeedResult) -> str:
+    lines = [
+        "HF Knightian multi-seed portfolio benchmark",
+        f"benchmark: {result.base_config.benchmark_name}",
+        f"evaluation seeds: {', '.join(str(seed) for seed in result.seeds)}",
+        "",
+        "policy                    surv_mean  surv_std  horizon_mean  bankrupt_mean  terminal_wealth_mean  cum_profit_mean",
+        "------------------------  ---------  --------  ------------  -------------  --------------------  ---------------",
+    ]
+    for policy_name, summary in sorted(result.policy_summaries.items()):
+        lines.append(
+            f"{policy_name:<24}"
+            f"  {summary.mean_survival_years:>9.2f}"
+            f"  {summary.survival_years_std:>8.2f}"
+            f"  {summary.mean_full_horizon_survival_rate:>12.2%}"
+            f"  {summary.mean_bankruptcy_rate:>13.2%}"
+            f"  {summary.mean_terminal_wealth:>20.2f}"
+            f"  {summary.mean_cumulative_profit:>15.2f}"
+        )
+    lines.append("")
+    lines.append("Per-seed summaries")
+    for seed in result.seeds:
+        seed_result = result.seed_results[seed]
+        lines.append(f"seed {seed}")
+        for policy_name, metrics in sorted(seed_result.policy_metrics.items()):
+            lines.append(
+                f"  {policy_name:<22}"
+                f" surv={metrics.mean_survival_years:>6.2f}"
+                f" horizon={metrics.full_horizon_survival_rate:>7.2%}"
+                f" bankrupt={metrics.bankruptcy_rate:>7.2%}"
+            )
+    return "\n".join(lines)
+
+
 def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
     parser = argparse.ArgumentParser(
         description="Train a Hugging Face-compatible Knightian regressor on portfolio data and re-run the DSSAT sim."
@@ -467,6 +598,11 @@ def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
     parser.add_argument("--debt", type=float, default=HFPortfolioBenchmarkConfig.initial_debt)
     parser.add_argument("--credit-limit", type=float, default=HFPortfolioBenchmarkConfig.initial_credit_limit)
     parser.add_argument("--acres", type=float, default=HFPortfolioBenchmarkConfig.acres)
+    parser.add_argument("--land-value-per-acre", type=float, default=HFPortfolioBenchmarkConfig.land_value_per_acre)
+    parser.add_argument("--land-financed-fraction", type=float, default=HFPortfolioBenchmarkConfig.land_financed_fraction)
+    parser.add_argument("--land-mortgage-rate", type=float, default=HFPortfolioBenchmarkConfig.land_mortgage_rate)
+    parser.add_argument("--land-mortgage-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_years)
+    parser.add_argument("--land-mortgage-grace-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_grace_years)
     parser.add_argument("--num-train-epochs", type=int, default=HFPortfolioBenchmarkConfig.num_train_epochs)
     parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
     parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
@@ -489,6 +625,11 @@ def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
         initial_debt=args.debt,
         initial_credit_limit=args.credit_limit,
         acres=args.acres,
+        land_value_per_acre=args.land_value_per_acre,
+        land_financed_fraction=args.land_financed_fraction,
+        land_mortgage_rate=args.land_mortgage_rate,
+        land_mortgage_years=args.land_mortgage_years,
+        land_mortgage_grace_years=args.land_mortgage_grace_years,
         num_train_epochs=args.num_train_epochs,
         learning_rate=args.learning_rate,
         hidden_dim=args.hidden_dim,
@@ -496,9 +637,83 @@ def parse_args(argv: list[str] | None = None) -> HFPortfolioBenchmarkConfig:
     )
 
 
+def parse_multiseed_args(argv: list[str] | None = None) -> tuple[HFPortfolioBenchmarkConfig, tuple[int, ...]]:
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate the HF Knightian portfolio benchmark across multiple evaluation seeds."
+    )
+    parser.add_argument("--benchmark", default=HFPortfolioBenchmarkConfig.benchmark_name)
+    parser.add_argument("--seed", dest="seeds", action="append", type=int, default=None)
+    parser.add_argument("--seed-start", type=int, default=HFPortfolioBenchmarkConfig.seed)
+    parser.add_argument("--seed-count", type=int, default=5)
+    parser.add_argument("--seed-step", type=int, default=1)
+    parser.add_argument("--training-seed", type=int, default=HFPortfolioBenchmarkConfig.training_seed)
+    parser.add_argument("--train-paths", type=int, default=HFPortfolioBenchmarkConfig.train_paths)
+    parser.add_argument("--test-paths", type=int, default=HFPortfolioBenchmarkConfig.test_paths)
+    parser.add_argument("--horizon-years", type=int, default=HFPortfolioBenchmarkConfig.horizon_years)
+    parser.add_argument("--workspace-root", type=str, default=HFPortfolioBenchmarkConfig.workspace_root)
+    parser.add_argument("--output-dir", type=str, default=HFPortfolioBenchmarkConfig.output_dir)
+    parser.add_argument("--cash", type=float, default=HFPortfolioBenchmarkConfig.initial_cash)
+    parser.add_argument("--debt", type=float, default=HFPortfolioBenchmarkConfig.initial_debt)
+    parser.add_argument("--credit-limit", type=float, default=HFPortfolioBenchmarkConfig.initial_credit_limit)
+    parser.add_argument("--acres", type=float, default=HFPortfolioBenchmarkConfig.acres)
+    parser.add_argument("--land-value-per-acre", type=float, default=HFPortfolioBenchmarkConfig.land_value_per_acre)
+    parser.add_argument("--land-financed-fraction", type=float, default=HFPortfolioBenchmarkConfig.land_financed_fraction)
+    parser.add_argument("--land-mortgage-rate", type=float, default=HFPortfolioBenchmarkConfig.land_mortgage_rate)
+    parser.add_argument("--land-mortgage-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_years)
+    parser.add_argument("--land-mortgage-grace-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_grace_years)
+    parser.add_argument("--num-train-epochs", type=int, default=HFPortfolioBenchmarkConfig.num_train_epochs)
+    parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
+    parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
+    parser.add_argument(
+        "--view-mode",
+        choices=["explicit_missing", "drop_unobserved", "truncate_after_unobserved"],
+        default=HFPortfolioBenchmarkConfig.view_mode,
+    )
+    args = parser.parse_args(argv)
+    seeds = (
+        tuple(args.seeds)
+        if args.seeds
+        else tuple(args.seed_start + index * args.seed_step for index in range(args.seed_count))
+    )
+    if not seeds:
+        raise ValueError("At least one evaluation seed is required.")
+    return (
+        HFPortfolioBenchmarkConfig(
+            benchmark_name=args.benchmark,
+            seed=seeds[0],
+            training_seed=args.training_seed,
+            train_paths=args.train_paths,
+            test_paths=args.test_paths,
+            horizon_years=args.horizon_years,
+            workspace_root=args.workspace_root,
+            output_dir=args.output_dir,
+            initial_cash=args.cash,
+            initial_debt=args.debt,
+            initial_credit_limit=args.credit_limit,
+            acres=args.acres,
+            land_value_per_acre=args.land_value_per_acre,
+            land_financed_fraction=args.land_financed_fraction,
+            land_mortgage_rate=args.land_mortgage_rate,
+            land_mortgage_years=args.land_mortgage_years,
+            land_mortgage_grace_years=args.land_mortgage_grace_years,
+            num_train_epochs=args.num_train_epochs,
+            learning_rate=args.learning_rate,
+            hidden_dim=args.hidden_dim,
+            view_mode=args.view_mode,
+        ),
+        seeds,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     result = run_hf_portfolio_benchmark(parse_args(argv))
     print(format_hf_portfolio_benchmark_result(result))
+
+
+def multiseed_main(argv: list[str] | None = None) -> None:
+    config, seeds = parse_multiseed_args(argv)
+    result = run_hf_portfolio_multiseed_benchmark(config, seeds=seeds)
+    print(format_hf_portfolio_multiseed_result(result))
 
 
 if __name__ == "__main__":

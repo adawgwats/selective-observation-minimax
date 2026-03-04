@@ -66,12 +66,12 @@ class AgricultureBenchmarkConfig:
     epochs: int = 140
     workspace_root: str = "dssat_runs/minimax_ag"
     dssat_root: str | None = None
-    initial_cash: float = 300_000.0
-    initial_debt: float = 100_000.0
+    initial_cash: float = 250_000.0
+    initial_debt: float = 0.0
     initial_credit_limit: float = 175_000.0
-    acres: float = 500.0
-    land_value_per_acre: float = 4_000.0
-    land_financed_fraction: float = 0.5
+    acres: float = 200.0
+    land_value_per_acre: float = 5_860.0
+    land_financed_fraction: float = 0.2
     land_mortgage_rate: float = 0.045
     land_mortgage_years: int = 30
     land_mortgage_grace_years: int = 2

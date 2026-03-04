@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,12 @@ from minimax_hf import (
     validate_dataset_columns,
 )
 from minimax_hf.trainer import _apply_online_mnar_assumption, _build_adversary
+from minimax_core.hf_portfolio_benchmark import (
+    HFPortfolioBenchmarkConfig,
+    HFPortfolioBenchmarkResult,
+    _aggregate_multiseed_policy_metrics,
+    parse_multiseed_args,
+)
 
 
 @dataclass(frozen=True)
@@ -287,3 +294,67 @@ def test_apply_online_mnar_assumption_overrides_snapshot_rate() -> None:
 
     assert snapshot.observation_rate == pytest.approx(2 / 3)
     assert adjusted.observation_rate == pytest.approx(0.4)
+
+
+def test_aggregate_multiseed_policy_metrics_computes_means_and_std() -> None:
+    seed_results = {
+        13: HFPortfolioBenchmarkResult(
+            config=HFPortfolioBenchmarkConfig(seed=13),
+            train_examples=10,
+            observation_rate=0.6,
+            stable_observation_rate=0.7,
+            distressed_observation_rate=0.4,
+            policy_metrics={
+                "hf_knightian": SimpleNamespace(
+                    mean_survival_years=20.0,
+                    full_horizon_survival_rate=0.20,
+                    bankruptcy_rate=0.80,
+                    mean_terminal_wealth=1_000_000.0,
+                    mean_cumulative_profit=750_000.0,
+                )
+            },
+            training_loss=1.0,
+            learned_policy_name="hf_knightian",
+        ),
+        14: HFPortfolioBenchmarkResult(
+            config=HFPortfolioBenchmarkConfig(seed=14),
+            train_examples=10,
+            observation_rate=0.6,
+            stable_observation_rate=0.7,
+            distressed_observation_rate=0.4,
+            policy_metrics={
+                "hf_knightian": SimpleNamespace(
+                    mean_survival_years=30.0,
+                    full_horizon_survival_rate=0.40,
+                    bankruptcy_rate=0.60,
+                    mean_terminal_wealth=1_500_000.0,
+                    mean_cumulative_profit=1_000_000.0,
+                )
+            },
+            training_loss=1.0,
+            learned_policy_name="hf_knightian",
+        ),
+    }
+
+    summary = _aggregate_multiseed_policy_metrics(seed_results)["hf_knightian"]
+
+    assert summary.mean_survival_years == pytest.approx(25.0)
+    assert summary.survival_years_std == pytest.approx(5.0)
+    assert summary.mean_full_horizon_survival_rate == pytest.approx(0.30)
+    assert summary.mean_bankruptcy_rate == pytest.approx(0.70)
+
+
+def test_parse_multiseed_args_builds_seed_sequence() -> None:
+    config, seeds = parse_multiseed_args(
+        [
+            "--seed-start",
+            "20",
+            "--seed-count",
+            "3",
+            "--seed-step",
+            "2",
+        ]
+    )
+
+    assert seeds == (20, 22, 24)
+    assert config.seed == 20
