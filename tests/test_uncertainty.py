@@ -1,4 +1,9 @@
-from minimax_core import KnightianObservationSet, Q1ObjectiveConfig, TimeVaryingObservationSet
+from minimax_core import (
+    KnightianObservationSet,
+    Q1ObjectiveConfig,
+    SurpriseDrivenObservationSet,
+    TimeVaryingObservationSet,
+)
 from minimax_core.uncertainty import project_to_boxed_weighted_mean, weighted_mean
 
 
@@ -59,3 +64,19 @@ def test_knightian_projection_weights_increase_with_history() -> None:
 
     assert weights[0] > weights[-1]
     assert all(0.2 <= weight <= 1.0 for weight in weights)
+
+
+def test_surprise_projection_weights_increase_with_surprise() -> None:
+    uncertainty_set = SurpriseDrivenObservationSet(
+        Q1ObjectiveConfig(q_min=0.25, q_max=1.0),
+        surprise_strength=1.4,
+    )
+
+    weights = uncertainty_set.projection_weights(
+        time_indices=[0, 1, 2, 3],
+        history_scores=[0.0, 0.0, 0.0, 0.0],
+        surprise_scores=[0.0, 0.1, 0.4, 1.2],
+    )
+
+    assert weights[0] > weights[-1]
+    assert all(0.15 <= weight <= 1.0 for weight in weights)

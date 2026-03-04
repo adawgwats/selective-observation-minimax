@@ -17,6 +17,7 @@ from minimax_core.gradient_validation import (
     train_robust_group,
     train_robust_group_online,
     train_robust_knightian,
+    train_robust_surprise,
     train_robust_time_varying,
 )
 
@@ -178,3 +179,33 @@ def test_knightian_training_improves_with_compounding_history() -> None:
     knightian_mse = _mse(_predict(knightian_parameters, dataset.test_features), dataset.test_labels)
 
     assert knightian_mse < erm_mse
+
+
+def test_surprise_training_improves_after_late_residual_shift() -> None:
+    dataset = LinearDataset(
+        train_features=[[1.0, 0.0], [1.0, 0.2], [1.0, 0.8], [1.0, 1.0]],
+        train_labels=[0.2, 0.3, 1.2, 1.8],
+        train_proxy_labels=[0.2, 0.3, 1.2, 0.9],
+        train_group_ids=["stable", "stable", "distressed", "distressed"],
+        train_observed_mask=[True, True, True, False],
+        train_time_indices=[0, 1, 2, 3],
+        train_history_scores=[0.0, 0.0, 0.5, 1.5],
+        test_features=[[1.0, 0.1], [1.0, 0.9], [1.0, 1.1]],
+        test_labels=[0.25, 1.35, 1.75],
+        stable_observation_probability=1.0,
+        distressed_observation_probability=0.5,
+    )
+    config = GradientValidationConfig(
+        seed=61,
+        epochs=140,
+        learning_rate=0.05,
+        adversary_mode="surprise",
+    )
+
+    erm_parameters = train_erm(dataset, config)
+    surprise_parameters = train_robust_surprise(dataset, config)
+
+    erm_mse = _mse(_predict(erm_parameters, dataset.test_features), dataset.test_labels)
+    surprise_mse = _mse(_predict(surprise_parameters, dataset.test_features), dataset.test_labels)
+
+    assert surprise_mse < erm_mse

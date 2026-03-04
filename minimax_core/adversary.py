@@ -10,6 +10,8 @@ from .uncertainty import (
     GroupedObservationUncertaintySet,
     HistoryAwareObservationUncertaintySet,
     KnightianObservationSet,
+    SurpriseAwareObservationUncertaintySet,
+    SurpriseDrivenObservationSet,
     ScoreBasedObservationSet,
     ScoreObservationUncertaintySet,
     SelectiveObservationSet,
@@ -234,4 +236,104 @@ class KnightianObservationAdversary(ObservationAdversary):
             len(self._q_values) != len(scores)
             or len(time_indices) != len(scores)
             or len(history_scores) != len(scores)
+        )
+
+
+@dataclass
+class SurpriseDrivenObservationAdversary(ObservationAdversary):
+    config: Q1ObjectiveConfig
+    uncertainty_set: SurpriseAwareObservationUncertaintySet | None = None
+    surprise_decay: float = 0.85
+    _q_values: list[float] = field(default_factory=list)
+    _expected_scores: list[float] = field(default_factory=list)
+    _surprise_scores: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.uncertainty_set is None:
+            self.uncertainty_set = SurpriseDrivenObservationSet(self.config)
+        if not 0.0 <= self.surprise_decay < 1.0:
+            raise ValueError("surprise_decay must be in [0, 1).")
+
+    def current_q(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> list[float]:
+        if self._needs_initialization(scores, time_indices, history_scores):
+            zeros = [0.0 for _ in scores]
+            self._q_values = self.uncertainty_set.initialize(
+                len(scores),
+                observation_rate,
+                time_indices,
+                history_scores,
+                zeros,
+            )
+            self._expected_scores = zeros
+            self._surprise_scores = zeros
+        return list(self._q_values)
+
+    def update(
+        self,
+        scores: list[float],
+        observation_rate: float,
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> list[float]:
+        current_q = self.current_q(scores, observation_rate, time_indices, history_scores)
+        scaled_scores = ScoreBasedObservationAdversary._normalize_scores(scores)
+        surprise_scores = self._update_surprise_state(scaled_scores)
+        ambiguity_factors = self.uncertainty_set.ambiguity_factors(
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+        proposed_q: list[float] = []
+
+        for q_value, score, ambiguity_factor in zip(current_q, scaled_scores, ambiguity_factors):
+            gradient = -(score * ambiguity_factor) / max(q_value, self.config.epsilon) ** 2
+            proposed_q.append(q_value + self.config.adversary_step_size * gradient)
+
+        self._q_values = self.uncertainty_set.project(
+            proposed_q,
+            observation_rate,
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+        return list(self._q_values)
+
+    def current_surprise_scores(self) -> list[float]:
+        return list(self._surprise_scores)
+
+    def _update_surprise_state(self, scaled_scores: list[float]) -> list[float]:
+        if not self._expected_scores:
+            self._expected_scores = [0.0 for _ in scaled_scores]
+        if not self._surprise_scores:
+            self._surprise_scores = [0.0 for _ in scaled_scores]
+
+        updated_expected: list[float] = []
+        updated_surprise: list[float] = []
+        for expected, state, score in zip(self._expected_scores, self._surprise_scores, scaled_scores):
+            innovation = abs(score - expected)
+            updated_surprise.append(self.surprise_decay * state + (1.0 - self.surprise_decay) * innovation)
+            updated_expected.append(self.surprise_decay * expected + (1.0 - self.surprise_decay) * score)
+
+        self._expected_scores = updated_expected
+        self._surprise_scores = updated_surprise
+        return list(self._surprise_scores)
+
+    def _needs_initialization(
+        self,
+        scores: list[float],
+        time_indices: list[int],
+        history_scores: list[float],
+    ) -> bool:
+        return (
+            len(self._q_values) != len(scores)
+            or len(time_indices) != len(scores)
+            or len(history_scores) != len(scores)
+            or len(self._expected_scores) != len(scores)
+            or len(self._surprise_scores) != len(scores)
         )

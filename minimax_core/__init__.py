@@ -3,6 +3,7 @@ from .adversary import (
     ObservationAdversary,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    SurpriseDrivenObservationAdversary,
     TimeVaryingObservationAdversary,
 )
 from .config import Q1ObjectiveConfig
@@ -35,6 +36,8 @@ from .uncertainty import (
     ScoreBasedObservationSet,
     ScoreObservationUncertaintySet,
     SelectiveObservationSet,
+    SurpriseAwareObservationUncertaintySet,
+    SurpriseDrivenObservationSet,
     TimeVaryingObservationSet,
     TimeVaryingObservationUncertaintySet,
 )
@@ -66,6 +69,9 @@ __all__ = [
     "GroupedObservationUncertaintySet",
     "SelectiveObservationAdversary",
     "SelectiveObservationSet",
+    "SurpriseAwareObservationUncertaintySet",
+    "SurpriseDrivenObservationAdversary",
+    "SurpriseDrivenObservationSet",
     "SyntheticMNARConfig",
     "SyntheticMNARResult",
     "TrialResult",
@@ -94,6 +100,7 @@ __all__ = [
     "run_gradient_validation_suite",
     "train_robust_group_online",
     "train_robust_knightian",
+    "train_robust_surprise",
     "train_robust_time_varying",
     "train_robust_score_online",
     "run_baseline_comparison",
@@ -128,6 +135,7 @@ def __getattr__(name: str):
         "run_gradient_validation_suite",
         "train_robust_group_online",
         "train_robust_knightian",
+        "train_robust_surprise",
         "train_robust_time_varying",
         "train_robust_score_online",
         "run_monte_carlo",
@@ -158,6 +166,7 @@ def __getattr__(name: str):
             run_gradient_validation_suite,
             train_robust_group_online,
             train_robust_knightian,
+            train_robust_surprise,
             train_robust_time_varying,
             train_robust_score_online,
         )
@@ -193,6 +202,7 @@ def __getattr__(name: str):
             "run_gradient_validation_suite": run_gradient_validation_suite,
             "train_robust_group_online": train_robust_group_online,
             "train_robust_knightian": train_robust_knightian,
+            "train_robust_surprise": train_robust_surprise,
             "train_robust_time_varying": train_robust_time_varying,
             "train_robust_score_online": train_robust_score_online,
             "run_monte_carlo": run_monte_carlo,

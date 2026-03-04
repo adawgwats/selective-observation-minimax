@@ -25,6 +25,7 @@ from .gradient_validation import (
     train_robust_group_online,
     train_robust_knightian,
     train_robust_score,
+    train_robust_surprise,
     train_robust_time_varying,
 )
 from .mnar import MNAR_VIEW_MODES, SyntheticMNARConfig, apply_synthetic_mnar, build_proxy_labels
@@ -41,6 +42,7 @@ AG_METHOD_ORDER = (
     "robust_score",
     "robust_time_varying",
     "robust_knightian",
+    "robust_surprise",
     "oracle",
 )
 
@@ -73,6 +75,7 @@ class AgricultureBenchmarkConfig:
     include_online_mnar_baseline: bool = True
     include_time_varying_baseline: bool = True
     include_knightian_baseline: bool = True
+    include_surprise_baseline: bool = True
     assumed_observation_rate: float | None = None
     q1: Q1ObjectiveConfig = field(default_factory=Q1ObjectiveConfig)
 
@@ -808,6 +811,7 @@ def run_agriculture_benchmark(
         robust_score_config = _robust_config_for_ag(config, adversary_mode="score")
         robust_time_varying_config = _robust_config_for_ag(config, adversary_mode="time_varying")
         robust_knightian_config = _robust_config_for_ag(config, adversary_mode="knightian")
+        robust_surprise_config = _robust_config_for_ag(config, adversary_mode="surprise")
 
         method_parameters: dict[str, list[float]] = {
             "erm": train_erm_baseline(dataset.linear, baseline_config),
@@ -837,6 +841,11 @@ def run_agriculture_benchmark(
             method_parameters["robust_knightian"] = train_robust_knightian(
                 dataset.linear,
                 robust_knightian_config,
+            )
+        if config.include_surprise_baseline:
+            method_parameters["robust_surprise"] = train_robust_surprise(
+                dataset.linear,
+                robust_surprise_config,
             )
 
         learned_summary, reference_summary = _run_policy_evaluation(
@@ -1178,6 +1187,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
     parser.add_argument("--exclude-online-mnar-baseline", action="store_true")
     parser.add_argument("--exclude-time-varying-baseline", action="store_true")
     parser.add_argument("--exclude-knightian-baseline", action="store_true")
+    parser.add_argument("--exclude-surprise-baseline", action="store_true")
     parser.add_argument("--assumed-observation-rate", type=float, default=None)
     parser.add_argument("--all-benchmarks", action="store_true")
     args = parser.parse_args(argv)
@@ -1207,6 +1217,7 @@ def parse_args(argv: list[str] | None = None) -> AgricultureBenchmarkConfig:
         include_online_mnar_baseline=not args.exclude_online_mnar_baseline,
         include_time_varying_baseline=not args.exclude_time_varying_baseline,
         include_knightian_baseline=not args.exclude_knightian_baseline,
+        include_surprise_baseline=not args.exclude_surprise_baseline,
         assumed_observation_rate=args.assumed_observation_rate,
         q1=Q1ObjectiveConfig(
             q_min=args.q_min,

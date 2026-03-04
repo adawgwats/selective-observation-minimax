@@ -3,6 +3,7 @@ from minimax_core import (
     Q1ObjectiveConfig,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    SurpriseDrivenObservationAdversary,
     TimeVaryingObservationAdversary,
     estimate_group_snapshot,
 )
@@ -87,3 +88,18 @@ def test_knightian_adversary_downweights_high_history_examples_more() -> None:
 
     assert updated_q[-1] < updated_q[0]
     assert abs(sum(weight * q for weight, q in zip(weights, updated_q)) / sum(weights) - observation_rate) < 1e-8
+
+
+def test_surprise_adversary_accumulates_residual_shocks() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = SurpriseDrivenObservationAdversary(config, surprise_decay=0.5)
+    time_indices = [0, 1, 2, 3]
+    history_scores = [0.0, 0.0, 0.0, 0.0]
+    observation_rate = 0.6
+
+    adversary.update([0.2, 0.2, 0.2, 0.2], observation_rate, time_indices, history_scores)
+    updated_q = adversary.update([0.2, 0.2, 0.2, 1.2], observation_rate, time_indices, history_scores)
+    surprise_scores = adversary.current_surprise_scores()
+
+    assert surprise_scores[-1] > surprise_scores[0]
+    assert updated_q[-1] < updated_q[0]

@@ -96,6 +96,31 @@ class HistoryAwareObservationUncertaintySet(ObservationUncertaintySet, ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class SurpriseAwareObservationUncertaintySet(ObservationUncertaintySet, ABC):
+    @abstractmethod
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        raise NotImplementedError
+
+
 def weighted_mean(values: Sequence[float], weights: Sequence[float]) -> float:
     if len(values) != len(weights):
         raise ValueError("values and weights must have the same length.")
@@ -389,11 +414,112 @@ class KnightianObservationSet(HistoryAwareObservationUncertaintySet):
 
     @staticmethod
     def _normalize_history_scores(history_scores: Sequence[float]) -> list[float]:
-        if not history_scores:
-            raise ValueError("history_scores must contain at least one value.")
-        min_score = min(history_scores)
-        max_score = max(history_scores)
-        if min_score == max_score:
-            return [0.0 for _ in history_scores]
-        scale = max_score - min_score
-        return [(score - min_score) / scale for score in history_scores]
+        return normalize_context_scores(history_scores, label="history_scores")
+
+
+@dataclass(frozen=True)
+class SurpriseDrivenObservationSet(SurpriseAwareObservationUncertaintySet):
+    time_strength: float = 0.25
+    history_strength: float = 0.6
+    surprise_strength: float = 1.35
+    min_projection_weight: float = 0.15
+
+    def __post_init__(self) -> None:
+        if self.time_strength < 0.0:
+            raise ValueError("time_strength must be nonnegative.")
+        if self.history_strength < 0.0:
+            raise ValueError("history_strength must be nonnegative.")
+        if self.surprise_strength < 0.0:
+            raise ValueError("surprise_strength must be nonnegative.")
+        if not 0.0 < self.min_projection_weight <= 1.0:
+            raise ValueError("min_projection_weight must be in (0, 1].")
+
+    def initialize(
+        self,
+        count: int,
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        if count <= 0:
+            raise ValueError("count must be positive.")
+        if len(time_indices) != count or len(history_scores) != count or len(surprise_scores) != count:
+            raise ValueError("time_indices, history_scores, and surprise_scores must match count.")
+        initial = [observation_rate for _ in range(count)]
+        return self.project(
+            initial,
+            observation_rate,
+            time_indices,
+            history_scores,
+            surprise_scores,
+        )
+
+    def project(
+        self,
+        proposed_q: Sequence[float],
+        observation_rate: float,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        count = len(proposed_q)
+        if count <= 0:
+            raise ValueError("at least one proposed q value is required.")
+        if len(time_indices) != count or len(history_scores) != count or len(surprise_scores) != count:
+            raise ValueError("time_indices, history_scores, and surprise_scores must match proposed_q.")
+        projection_weights = self.projection_weights(time_indices, history_scores, surprise_scores)
+        lower_bounds = [self.config.q_min for _ in range(count)]
+        upper_bounds = [self.config.q_max for _ in range(count)]
+        return project_to_boxed_weighted_mean(
+            values=proposed_q,
+            weights=projection_weights,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+            target_mean=observation_rate,
+            tolerance=self.config.projection_tolerance,
+            max_iterations=self.config.projection_max_iterations,
+        )
+
+    def ambiguity_factors(
+        self,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        normalized_time = TimeVaryingObservationSet._normalize_time_indices(time_indices)
+        normalized_history = normalize_context_scores(history_scores, label="history_scores")
+        normalized_surprise = normalize_context_scores(surprise_scores, label="surprise_scores")
+        return [
+            1.0
+            + self.time_strength * time_score
+            + self.history_strength * history_score
+            + self.surprise_strength * surprise_score
+            for time_score, history_score, surprise_score in zip(
+                normalized_time,
+                normalized_history,
+                normalized_surprise,
+            )
+        ]
+
+    def projection_weights(
+        self,
+        time_indices: Sequence[int],
+        history_scores: Sequence[float],
+        surprise_scores: Sequence[float],
+    ) -> list[float]:
+        return [
+            max(1.0 / factor, self.min_projection_weight)
+            for factor in self.ambiguity_factors(time_indices, history_scores, surprise_scores)
+        ]
+
+
+def normalize_context_scores(scores: Sequence[float], *, label: str) -> list[float]:
+    if not scores:
+        raise ValueError(f"{label} must contain at least one value.")
+    min_score = min(scores)
+    max_score = max(scores)
+    if min_score == max_score:
+        return [0.0 for _ in scores]
+    scale = max_score - min_score
+    return [(score - min_score) / scale for score in scores]

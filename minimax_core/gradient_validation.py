@@ -9,6 +9,7 @@ from .adversary import (
     KnightianObservationAdversary,
     ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    SurpriseDrivenObservationAdversary,
     TimeVaryingObservationAdversary,
 )
 from .config import Q1ObjectiveConfig
@@ -49,8 +50,10 @@ class GradientValidationConfig:
             raise ValueError("trials must be positive.")
         if self.scenario not in VALIDATION_SCENARIOS:
             raise ValueError(f"scenario must be one of {VALIDATION_SCENARIOS}.")
-        if self.adversary_mode not in {"group", "score", "time_varying", "knightian"}:
-            raise ValueError("adversary_mode must be 'group', 'score', 'time_varying', or 'knightian'.")
+        if self.adversary_mode not in {"group", "score", "time_varying", "knightian", "surprise"}:
+            raise ValueError(
+                "adversary_mode must be 'group', 'score', 'time_varying', 'knightian', or 'surprise'."
+            )
         if self.learning_rate <= 0.0:
             raise ValueError("learning_rate must be positive.")
         if self.epochs <= 0:
@@ -404,7 +407,9 @@ def train_robust(dataset: LinearDataset, config: GradientValidationConfig) -> li
         return train_robust_score(dataset, config)
     if config.adversary_mode == "time_varying":
         return train_robust_time_varying(dataset, config)
-    return train_robust_knightian(dataset, config)
+    if config.adversary_mode == "knightian":
+        return train_robust_knightian(dataset, config)
+    return train_robust_surprise(dataset, config)
 
 
 def train_robust_group(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
@@ -515,6 +520,50 @@ def train_robust_time_varying(dataset: LinearDataset, config: GradientValidation
 def train_robust_knightian(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
     parameters = [0.0 for _ in dataset.train_features[0]]
     adversary = KnightianObservationAdversary(config.q1)
+    observation_rate = sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
+    if config.assumed_observation_rate is not None:
+        observation_rate = config.assumed_observation_rate
+    observation_rate = _clip_observation_rate(observation_rate, config)
+    time_indices = dataset.train_time_indices
+    history_scores = dataset.train_history_scores
+    if len(time_indices) != len(dataset.train_features):
+        raise ValueError("train_time_indices must match train_features length.")
+    if len(history_scores) != len(dataset.train_features):
+        raise ValueError("train_history_scores must match train_features length.")
+
+    for _ in range(config.epochs):
+        predictions = _predict(parameters, dataset.train_features)
+        losses = [(prediction - label) ** 2 for prediction, label in zip(predictions, dataset.train_labels)]
+        proxy_losses = [
+            (prediction - proxy_label) ** 2
+            for prediction, proxy_label in zip(predictions, dataset.train_proxy_labels)
+        ]
+        effective_scores = [
+            actual_loss if observed else proxy_loss
+            for actual_loss, proxy_loss, observed in zip(
+                losses,
+                proxy_losses,
+                dataset.train_observed_mask,
+            )
+        ]
+        q_values = adversary.update(
+            effective_scores,
+            observation_rate,
+            time_indices,
+            history_scores,
+        )
+        weights = compute_score_based_weights(dataset.train_observed_mask, q_values)
+        gradients = _weighted_gradient(parameters, dataset.train_features, dataset.train_labels, weights)
+        parameters = [
+            parameter - config.learning_rate * gradient
+            for parameter, gradient in zip(parameters, gradients)
+        ]
+    return parameters
+
+
+def train_robust_surprise(dataset: LinearDataset, config: GradientValidationConfig) -> list[float]:
+    parameters = [0.0 for _ in dataset.train_features[0]]
+    adversary = SurpriseDrivenObservationAdversary(config.q1)
     observation_rate = sum(1 for observed in dataset.train_observed_mask if observed) / len(dataset.train_observed_mask)
     if config.assumed_observation_rate is not None:
         observation_rate = config.assumed_observation_rate
@@ -690,7 +739,7 @@ def parse_args(argv: list[str] | None = None) -> GradientValidationConfig:
     )
     parser.add_argument(
         "--adversary-mode",
-        choices=["group", "score", "time_varying", "knightian"],
+        choices=["group", "score", "time_varying", "knightian", "surprise"],
         default=GradientValidationConfig.adversary_mode,
     )
     parser.add_argument("--seed", type=int, default=GradientValidationConfig.seed)
