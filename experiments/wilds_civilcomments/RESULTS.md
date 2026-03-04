@@ -97,3 +97,41 @@ Interpretation:
 - under 5-seed averaging, auto-discovery is no longer a single-seed anomaly
 - auto-discovery is slightly better than ERM on worst-group accuracy in both val and test means
 - the absolute gap is still small, and the variability is high, so this is progress but not top-leaderboard performance
+
+## March 4, 2026 Unlabeled Self-Training Probe
+
+An exploratory semi-supervised probe was run using WILDS `civilcomments` unlabeled data
+(`extra_unlabeled`) via:
+
+- `experiments/wilds_civilcomments/semi_supervised.py`
+- unlabeled candidate cap: `8192`
+- pseudo-label threshold: `0.90`
+- student fine-tune epochs: `1`
+- seed: `17`
+
+Artifacts:
+
+- auto: `outputs/wilds_civilcomments/midscale_auto_v1_rate_0p75_semi_supervised/semi_supervised_metrics.json`
+- ERM: `outputs/wilds_civilcomments/midscale_erm_semi_supervised/semi_supervised_metrics.json`
+
+Teacher -> student results:
+
+| Method | Stage | Val acc_avg | Val acc_wg | Test acc_avg | Test acc_wg |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `robust_auto_v1` (`assumed_observation_rate=0.75`) | teacher | `0.9209` | `0.4286` | `0.9236` | `0.5909` |
+| `robust_auto_v1` (`assumed_observation_rate=0.75`) | student | `0.9231` | `0.3846` | `0.9243` | `0.5000` |
+| `erm` | teacher | `0.9214` | `0.4286` | `0.9243` | `0.5227` |
+| `erm` | student | `0.9236` | `0.4286` | `0.9224` | `0.5455` |
+
+Pseudo-label diagnostics:
+
+| Method | Pseudo selected | Selection rate | Agreement vs hidden unlabeled labels |
+| --- | ---: | ---: | ---: |
+| `robust_auto_v1` | `4445 / 8192` | `0.5426` | `0.3917` |
+| `erm` | `6048 / 8192` | `0.7383` | `0.3271` |
+
+Current interpretation:
+
+- this first unlabeled protocol is not yet helping `robust_auto_v1` worst-group accuracy
+- `erm` gained test worst-group accuracy modestly (`+0.0228`) but lost test average accuracy (`-0.0019`)
+- pseudo-label agreement is low for both methods, indicating that this naive self-training setup needs stronger filtering/calibration before leaderboard-facing use

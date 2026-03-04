@@ -40,6 +40,15 @@ python experiments/wilds_civilcomments/multiseed.py --config experiments/wilds_c
 
 Each sweep writes a `multiseed_summary.json` artifact under `<config.output_dir>_multiseed/`.
 
+Run exploratory unlabeled self-training (teacher -> pseudo-label -> student) with:
+
+```bash
+python experiments/wilds_civilcomments/semi_supervised.py --config experiments/wilds_civilcomments/configs/midscale_auto_v1_rate_0p75.yaml --output-root outputs/wilds_civilcomments/midscale_auto_v1_rate_0p75_semi_supervised --max-unlabeled-examples 8192 --pseudo-label-threshold 0.90 --student-num-train-epochs 1
+python experiments/wilds_civilcomments/semi_supervised.py --config experiments/wilds_civilcomments/configs/midscale_erm.yaml --output-root outputs/wilds_civilcomments/midscale_erm_semi_supervised --max-unlabeled-examples 8192 --pseudo-label-threshold 0.90 --student-num-train-epochs 1
+```
+
+The semi-supervised runner writes `semi_supervised_metrics.json` to the output root.
+
 Evaluate a saved checkpoint with:
 
 ```bash
