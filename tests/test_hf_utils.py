@@ -21,6 +21,7 @@ from minimax_core.hf_portfolio_benchmark import (
     HFPortfolioBenchmarkResult,
     _aggregate_multiseed_policy_metrics,
     parse_multiseed_args,
+    parse_seed_grid_args,
 )
 
 
@@ -358,3 +359,23 @@ def test_parse_multiseed_args_builds_seed_sequence() -> None:
 
     assert seeds == (20, 22, 24)
     assert config.seed == 20
+
+
+def test_parse_seed_grid_args_builds_training_and_eval_sequences() -> None:
+    config, training_seeds, evaluation_seeds = parse_seed_grid_args(
+        [
+            "--training-seed-start",
+            "30",
+            "--training-seed-count",
+            "2",
+            "--eval-seed-start",
+            "40",
+            "--eval-seed-count",
+            "3",
+        ]
+    )
+
+    assert training_seeds == (30, 31)
+    assert evaluation_seeds == (40, 41, 42)
+    assert config.training_seed == 30
+    assert config.seed == 40

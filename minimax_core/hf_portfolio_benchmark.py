@@ -81,6 +81,15 @@ class HFPortfolioMultiSeedResult:
     policy_summaries: dict[str, HFPortfolioMultiSeedPolicySummary]
 
 
+@dataclass(frozen=True)
+class HFPortfolioSeedGridResult:
+    base_config: HFPortfolioBenchmarkConfig
+    training_seeds: tuple[int, ...]
+    evaluation_seeds: tuple[int, ...]
+    grid_results: dict[tuple[int, int], HFPortfolioBenchmarkResult]
+    policy_summaries: dict[str, HFPortfolioMultiSeedPolicySummary]
+
+
 class _TabularCollator:
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         import torch
@@ -348,10 +357,9 @@ def _std(values: list[float]) -> float:
     return pstdev(values)
 
 
-def run_hf_portfolio_benchmark(
+def _train_hf_portfolio_model(
     config: HFPortfolioBenchmarkConfig,
-) -> HFPortfolioBenchmarkResult:
-    import torch
+) -> tuple[Any, dict[str, Any], Any, float | None]:
     from datasets import Dataset
     from transformers import TrainingArguments
 
@@ -402,12 +410,17 @@ def run_hf_portfolio_benchmark(
         ),
     )
     train_output = trainer.train()
+    return model.eval(), context, view, getattr(train_output, "training_loss", None)
 
+
+def _build_hf_benchmark_policies(
+    config: HFPortfolioBenchmarkConfig,
+    *,
+    trained_model: Any,
+    context: dict[str, Any],
+) -> dict[str, Any]:
     ag = _require_ag_survival_sim()
     build_portfolio_demo_policies = ag["build_portfolio_demo_policies"]
-    evaluate_portfolio_policies = ag["evaluate_portfolio_policies"]
-    ScenarioGenerator = ag["ScenarioGenerator"]
-    PortfolioFarmSimulator = ag["PortfolioFarmSimulator"]
 
     benchmark_policies = build_portfolio_demo_policies(
         config.benchmark_name,
@@ -423,7 +436,7 @@ def run_hf_portfolio_benchmark(
         ),
     )
     benchmark_policies["hf_knightian"] = _HFPortfolioPolicy(
-        model=model.eval(),
+        model=trained_model,
         actions=context["actions"],
         crop_model=context["crop_model"],
         candidate_generator=context["candidate_generator"],
@@ -435,6 +448,20 @@ def run_hf_portfolio_benchmark(
         ),
         seed=config.seed,
     )
+    return benchmark_policies
+
+
+def _evaluate_hf_benchmark_policies(
+    config: HFPortfolioBenchmarkConfig,
+    *,
+    context: dict[str, Any],
+    benchmark_policies: dict[str, Any],
+) -> dict[str, Any]:
+    ag = _require_ag_survival_sim()
+    evaluate_portfolio_policies = ag["evaluate_portfolio_policies"]
+    ScenarioGenerator = ag["ScenarioGenerator"]
+    PortfolioFarmSimulator = ag["PortfolioFarmSimulator"]
+
     summary = evaluate_portfolio_policies(
         simulator=PortfolioFarmSimulator(crop_model=context["crop_model"]),
         scenario_generator=ScenarioGenerator(seed=config.seed),
@@ -443,14 +470,31 @@ def run_hf_portfolio_benchmark(
         horizon_years=config.horizon_years,
         num_paths=config.test_paths,
     )
+    return summary.metrics
+
+
+def run_hf_portfolio_benchmark(
+    config: HFPortfolioBenchmarkConfig,
+) -> HFPortfolioBenchmarkResult:
+    trained_model, context, view, training_loss = _train_hf_portfolio_model(config)
+    benchmark_policies = _build_hf_benchmark_policies(
+        config,
+        trained_model=trained_model,
+        context=context,
+    )
+    policy_metrics = _evaluate_hf_benchmark_policies(
+        config,
+        context=context,
+        benchmark_policies=benchmark_policies,
+    )
     return HFPortfolioBenchmarkResult(
         config=config,
         train_examples=len(view.rows),
         observation_rate=view.result.observation_rate,
         stable_observation_rate=view.result.stable_observation_rate,
         distressed_observation_rate=view.result.distressed_observation_rate,
-        policy_metrics=summary.metrics,
-        training_loss=getattr(train_output, "training_loss", None),
+        policy_metrics=policy_metrics,
+        training_loss=training_loss,
         learned_policy_name="hf_knightian",
     )
 
@@ -523,6 +567,67 @@ def run_hf_portfolio_multiseed_benchmark(
     )
 
 
+def run_hf_portfolio_seed_grid_benchmark(
+    base_config: HFPortfolioBenchmarkConfig,
+    *,
+    training_seeds: tuple[int, ...],
+    evaluation_seeds: tuple[int, ...],
+) -> HFPortfolioSeedGridResult:
+    if not training_seeds:
+        raise ValueError("training_seeds must not be empty.")
+    if not evaluation_seeds:
+        raise ValueError("evaluation_seeds must not be empty.")
+
+    grid_results: dict[tuple[int, int], HFPortfolioBenchmarkResult] = {}
+    for training_seed in training_seeds:
+        training_config = HFPortfolioBenchmarkConfig(
+            **{
+                **base_config.__dict__,
+                "training_seed": training_seed,
+                "workspace_root": str(Path(base_config.workspace_root) / f"train_seed_{training_seed}"),
+                "output_dir": str(Path(base_config.output_dir) / f"train_seed_{training_seed}"),
+            }
+        )
+        trained_model, context, view, training_loss = _train_hf_portfolio_model(training_config)
+        for evaluation_seed in evaluation_seeds:
+            evaluation_config = HFPortfolioBenchmarkConfig(
+                **{
+                    **training_config.__dict__,
+                    "seed": evaluation_seed,
+                }
+            )
+            benchmark_policies = _build_hf_benchmark_policies(
+                evaluation_config,
+                trained_model=trained_model,
+                context=context,
+            )
+            policy_metrics = _evaluate_hf_benchmark_policies(
+                evaluation_config,
+                context=context,
+                benchmark_policies=benchmark_policies,
+            )
+            grid_results[(training_seed, evaluation_seed)] = HFPortfolioBenchmarkResult(
+                config=evaluation_config,
+                train_examples=len(view.rows),
+                observation_rate=view.result.observation_rate,
+                stable_observation_rate=view.result.stable_observation_rate,
+                distressed_observation_rate=view.result.distressed_observation_rate,
+                policy_metrics=policy_metrics,
+                training_loss=training_loss,
+                learned_policy_name="hf_knightian",
+            )
+
+    return HFPortfolioSeedGridResult(
+        base_config=base_config,
+        training_seeds=tuple(training_seeds),
+        evaluation_seeds=tuple(evaluation_seeds),
+        grid_results=grid_results,
+        policy_summaries=_aggregate_multiseed_policy_metrics(
+            {index: result for index, result in enumerate(grid_results.values())}
+        ),
+    )
+
+
 def format_hf_portfolio_benchmark_result(result: HFPortfolioBenchmarkResult) -> str:
     lines = [
         "HF Knightian portfolio benchmark",
@@ -578,6 +683,41 @@ def format_hf_portfolio_multiseed_result(result: HFPortfolioMultiSeedResult) -> 
                 f" surv={metrics.mean_survival_years:>6.2f}"
                 f" horizon={metrics.full_horizon_survival_rate:>7.2%}"
                 f" bankrupt={metrics.bankruptcy_rate:>7.2%}"
+            )
+    return "\n".join(lines)
+
+
+def format_hf_portfolio_seed_grid_result(result: HFPortfolioSeedGridResult) -> str:
+    lines = [
+        "HF Knightian training/evaluation seed grid benchmark",
+        f"benchmark: {result.base_config.benchmark_name}",
+        f"training seeds: {', '.join(str(seed) for seed in result.training_seeds)}",
+        f"evaluation seeds: {', '.join(str(seed) for seed in result.evaluation_seeds)}",
+        "",
+        "policy                    surv_mean  surv_std  horizon_mean  bankrupt_mean  terminal_wealth_mean  cum_profit_mean",
+        "------------------------  ---------  --------  ------------  -------------  --------------------  ---------------",
+    ]
+    for policy_name, summary in sorted(result.policy_summaries.items()):
+        lines.append(
+            f"{policy_name:<24}"
+            f"  {summary.mean_survival_years:>9.2f}"
+            f"  {summary.survival_years_std:>8.2f}"
+            f"  {summary.mean_full_horizon_survival_rate:>12.2%}"
+            f"  {summary.mean_bankruptcy_rate:>13.2%}"
+            f"  {summary.mean_terminal_wealth:>20.2f}"
+            f"  {summary.mean_cumulative_profit:>15.2f}"
+        )
+    lines.append("")
+    lines.append("Per training/evaluation seed pair")
+    for training_seed in result.training_seeds:
+        for evaluation_seed in result.evaluation_seeds:
+            run_result = result.grid_results[(training_seed, evaluation_seed)]
+            hf_metrics = run_result.policy_metrics["hf_knightian"]
+            lines.append(
+                f"train={training_seed} eval={evaluation_seed}"
+                f" surv={hf_metrics.mean_survival_years:>6.2f}"
+                f" horizon={hf_metrics.full_horizon_survival_rate:>7.2%}"
+                f" bankrupt={hf_metrics.bankruptcy_rate:>7.2%}"
             )
     return "\n".join(lines)
 
@@ -705,6 +845,91 @@ def parse_multiseed_args(argv: list[str] | None = None) -> tuple[HFPortfolioBenc
     )
 
 
+def parse_seed_grid_args(
+    argv: list[str] | None = None,
+) -> tuple[HFPortfolioBenchmarkConfig, tuple[int, ...], tuple[int, ...]]:
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate the HF Knightian portfolio benchmark across training and evaluation seed grids."
+    )
+    parser.add_argument("--benchmark", default=HFPortfolioBenchmarkConfig.benchmark_name)
+    parser.add_argument("--training-seed", dest="training_seeds", action="append", type=int, default=None)
+    parser.add_argument("--training-seed-start", type=int, default=HFPortfolioBenchmarkConfig.training_seed)
+    parser.add_argument("--training-seed-count", type=int, default=3)
+    parser.add_argument("--training-seed-step", type=int, default=1)
+    parser.add_argument("--eval-seed", dest="evaluation_seeds", action="append", type=int, default=None)
+    parser.add_argument("--eval-seed-start", type=int, default=HFPortfolioBenchmarkConfig.seed)
+    parser.add_argument("--eval-seed-count", type=int, default=3)
+    parser.add_argument("--eval-seed-step", type=int, default=1)
+    parser.add_argument("--train-paths", type=int, default=HFPortfolioBenchmarkConfig.train_paths)
+    parser.add_argument("--test-paths", type=int, default=HFPortfolioBenchmarkConfig.test_paths)
+    parser.add_argument("--horizon-years", type=int, default=HFPortfolioBenchmarkConfig.horizon_years)
+    parser.add_argument("--workspace-root", type=str, default=HFPortfolioBenchmarkConfig.workspace_root)
+    parser.add_argument("--output-dir", type=str, default=HFPortfolioBenchmarkConfig.output_dir)
+    parser.add_argument("--cash", type=float, default=HFPortfolioBenchmarkConfig.initial_cash)
+    parser.add_argument("--debt", type=float, default=HFPortfolioBenchmarkConfig.initial_debt)
+    parser.add_argument("--credit-limit", type=float, default=HFPortfolioBenchmarkConfig.initial_credit_limit)
+    parser.add_argument("--acres", type=float, default=HFPortfolioBenchmarkConfig.acres)
+    parser.add_argument("--land-value-per-acre", type=float, default=HFPortfolioBenchmarkConfig.land_value_per_acre)
+    parser.add_argument("--land-financed-fraction", type=float, default=HFPortfolioBenchmarkConfig.land_financed_fraction)
+    parser.add_argument("--land-mortgage-rate", type=float, default=HFPortfolioBenchmarkConfig.land_mortgage_rate)
+    parser.add_argument("--land-mortgage-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_years)
+    parser.add_argument("--land-mortgage-grace-years", type=int, default=HFPortfolioBenchmarkConfig.land_mortgage_grace_years)
+    parser.add_argument("--num-train-epochs", type=int, default=HFPortfolioBenchmarkConfig.num_train_epochs)
+    parser.add_argument("--learning-rate", type=float, default=HFPortfolioBenchmarkConfig.learning_rate)
+    parser.add_argument("--hidden-dim", type=int, default=HFPortfolioBenchmarkConfig.hidden_dim)
+    parser.add_argument(
+        "--view-mode",
+        choices=["explicit_missing", "drop_unobserved", "truncate_after_unobserved"],
+        default=HFPortfolioBenchmarkConfig.view_mode,
+    )
+    args = parser.parse_args(argv)
+    training_seeds = (
+        tuple(args.training_seeds)
+        if args.training_seeds
+        else tuple(
+            args.training_seed_start + index * args.training_seed_step
+            for index in range(args.training_seed_count)
+        )
+    )
+    evaluation_seeds = (
+        tuple(args.evaluation_seeds)
+        if args.evaluation_seeds
+        else tuple(
+            args.eval_seed_start + index * args.eval_seed_step
+            for index in range(args.eval_seed_count)
+        )
+    )
+    if not training_seeds or not evaluation_seeds:
+        raise ValueError("Training and evaluation seed lists must not be empty.")
+    return (
+        HFPortfolioBenchmarkConfig(
+            benchmark_name=args.benchmark,
+            seed=evaluation_seeds[0],
+            training_seed=training_seeds[0],
+            train_paths=args.train_paths,
+            test_paths=args.test_paths,
+            horizon_years=args.horizon_years,
+            workspace_root=args.workspace_root,
+            output_dir=args.output_dir,
+            initial_cash=args.cash,
+            initial_debt=args.debt,
+            initial_credit_limit=args.credit_limit,
+            acres=args.acres,
+            land_value_per_acre=args.land_value_per_acre,
+            land_financed_fraction=args.land_financed_fraction,
+            land_mortgage_rate=args.land_mortgage_rate,
+            land_mortgage_years=args.land_mortgage_years,
+            land_mortgage_grace_years=args.land_mortgage_grace_years,
+            num_train_epochs=args.num_train_epochs,
+            learning_rate=args.learning_rate,
+            hidden_dim=args.hidden_dim,
+            view_mode=args.view_mode,
+        ),
+        training_seeds,
+        evaluation_seeds,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     result = run_hf_portfolio_benchmark(parse_args(argv))
     print(format_hf_portfolio_benchmark_result(result))
@@ -714,6 +939,16 @@ def multiseed_main(argv: list[str] | None = None) -> None:
     config, seeds = parse_multiseed_args(argv)
     result = run_hf_portfolio_multiseed_benchmark(config, seeds=seeds)
     print(format_hf_portfolio_multiseed_result(result))
+
+
+def seed_grid_main(argv: list[str] | None = None) -> None:
+    config, training_seeds, evaluation_seeds = parse_seed_grid_args(argv)
+    result = run_hf_portfolio_seed_grid_benchmark(
+        config,
+        training_seeds=training_seeds,
+        evaluation_seeds=evaluation_seeds,
+    )
+    print(format_hf_portfolio_seed_grid_result(result))
 
 
 if __name__ == "__main__":

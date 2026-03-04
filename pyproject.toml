@@ -43,6 +43,7 @@ minimax-ag-trace = "minimax_core.ag_benchmark:trace_main"
 minimax-ag-visualize = "minimax_core.ag_benchmark:trace_main"
 minimax-hf-portfolio-benchmark = "minimax_core.hf_portfolio_benchmark:main"
 minimax-hf-portfolio-multiseed = "minimax_core.hf_portfolio_benchmark:multiseed_main"
+minimax-hf-portfolio-seed-grid = "minimax_core.hf_portfolio_benchmark:seed_grid_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
