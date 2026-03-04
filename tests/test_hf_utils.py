@@ -14,7 +14,7 @@ from minimax_hf import (
     prepare_training_args,
     validate_dataset_columns,
 )
-from minimax_hf.trainer import _apply_online_mnar_assumption
+from minimax_hf.trainer import _apply_online_mnar_assumption, _build_adversary
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,11 @@ def test_minimax_hf_config_rejects_invalid_assumed_observation_rate() -> None:
         MinimaxHFConfig(assumed_observation_rate=1.2)
 
 
+def test_minimax_hf_config_rejects_invalid_uncertainty_mode() -> None:
+    with pytest.raises(ValueError):
+        MinimaxHFConfig(uncertainty_mode="unknown")  # type: ignore[arg-type]
+
+
 def test_build_loss_adapter_supports_common_hf_tasks() -> None:
     sequence_adapter = build_loss_adapter("sequence_classification")
     regression_adapter = build_loss_adapter("regression")
@@ -88,6 +93,32 @@ def test_validate_dataset_columns_allows_missing_observed_key_by_default() -> No
         group_key="group_id",
         observed_key="label_observed",
     )
+
+
+def test_validate_dataset_columns_supports_extra_required_keys() -> None:
+    dataset = StubDataset([{"labels": 1, "group_id": "stable", "time_index": 0}])
+
+    validate_dataset_columns(
+        dataset,
+        group_key="group_id",
+        observed_key="label_observed",
+        extra_required_keys=("time_index",),
+    )
+
+    with pytest.raises(DatasetSchemaError):
+        validate_dataset_columns(
+            StubDataset([{"labels": 1, "group_id": "stable"}]),
+            group_key="group_id",
+            observed_key="label_observed",
+            extra_required_keys=("time_index",),
+        )
+
+
+def test_build_adversary_supports_knightian_modes() -> None:
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="group")).__class__.__name__ == "SelectiveObservationAdversary"
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="time_varying")).__class__.__name__ == "TimeVaryingObservationAdversary"
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="knightian")).__class__.__name__ == "KnightianObservationAdversary"
+    assert _build_adversary(MinimaxHFConfig(uncertainty_mode="surprise")).__class__.__name__ == "SurpriseDrivenObservationAdversary"
 
 
 def test_minimax_data_collator_preserves_metadata_and_defaults_observed_mask() -> None:

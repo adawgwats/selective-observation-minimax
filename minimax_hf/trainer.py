@@ -5,7 +5,12 @@ from typing import Any, Callable, Protocol
 
 from minimax_core import (
     GroupSnapshot,
+    KnightianObservationAdversary,
+    ScoreBasedObservationAdversary,
     SelectiveObservationAdversary,
+    SurpriseDrivenObservationAdversary,
+    TimeVaryingObservationAdversary,
+    compute_score_based_weights,
     compute_example_weights,
     estimate_group_snapshot,
 )
@@ -61,6 +66,28 @@ def _apply_online_mnar_assumption(
     return replace(snapshot, observation_rate=assumed_rate)
 
 
+def _required_metadata_keys(config: MinimaxHFConfig) -> tuple[str, ...]:
+    if config.uncertainty_mode == "time_varying":
+        return (config.time_key,)
+    if config.uncertainty_mode in {"knightian", "surprise"}:
+        return (config.time_key, config.history_key)
+    return ()
+
+
+def _build_adversary(config: MinimaxHFConfig) -> Any:
+    if config.uncertainty_mode == "group":
+        return SelectiveObservationAdversary(config.q1)
+    if config.uncertainty_mode == "score":
+        return ScoreBasedObservationAdversary(config.q1)
+    if config.uncertainty_mode == "time_varying":
+        return TimeVaryingObservationAdversary(config.q1)
+    if config.uncertainty_mode == "knightian":
+        return KnightianObservationAdversary(config.q1)
+    if config.uncertainty_mode == "surprise":
+        return SurpriseDrivenObservationAdversary(config.q1)
+    raise ValueError(f"unsupported uncertainty_mode: {config.uncertainty_mode}")
+
+
 if Trainer is None:
 
     class MinimaxTrainer:  # pragma: no cover - import guard only.
@@ -92,18 +119,20 @@ else:
                 self.minimax_config.task_type,
                 token_ignore_index=self.minimax_config.token_ignore_index,
             )
-            self._adversary = SelectiveObservationAdversary(self.minimax_config.q1)
+            self._adversary = _build_adversary(self.minimax_config)
             validate_dataset_columns(
                 self.train_dataset,
                 group_key=self.minimax_config.group_key,
                 observed_key=self.minimax_config.observed_key,
                 require_observed_key=self.minimax_config.require_observed_key,
+                extra_required_keys=_required_metadata_keys(self.minimax_config),
             )
             validate_dataset_columns(
                 self.eval_dataset,
                 group_key=self.minimax_config.group_key,
                 observed_key=self.minimax_config.observed_key,
                 require_observed_key=self.minimax_config.require_observed_key,
+                extra_required_keys=_required_metadata_keys(self.minimax_config),
             )
             if not is_minimax_data_collator(self.data_collator):
                 self.data_collator = MinimaxDataCollator(
@@ -129,33 +158,77 @@ else:
                 if observed_mask_raw is not None
                 else [True] * len(group_ids)
             )
+            time_indices = (
+                _normalize_metadata(model_inputs.pop(self.minimax_config.time_key))
+                if self.minimax_config.uncertainty_mode in {"time_varying", "knightian", "surprise"}
+                else None
+            )
+            history_scores = (
+                _normalize_metadata(model_inputs.pop(self.minimax_config.history_key))
+                if self.minimax_config.uncertainty_mode in {"knightian", "surprise"}
+                else None
+            )
 
             labels = model_inputs.get("labels")
             outputs = model(**model_inputs)
             per_example_losses = self.loss_adapter(outputs, labels)
             detached_losses = per_example_losses.detach().cpu().tolist()
 
-            snapshot = estimate_group_snapshot(
-                losses=detached_losses,
-                group_ids=group_ids,
-                observed_mask=[bool(item) for item in observed_mask],
-            )
-            snapshot = _apply_online_mnar_assumption(
-                snapshot,
-                [bool(item) for item in observed_mask],
-                self.minimax_config,
-            )
-            q_values = (
-                self._adversary.update(snapshot)
-                if model.training
-                else self._adversary.current_q(snapshot)
-            )
-            example_weights = compute_example_weights(
-                snapshot=snapshot,
-                group_ids=group_ids,
-                observed_mask=[bool(item) for item in observed_mask],
-                q_values=q_values,
-            )
+            bool_observed_mask = [bool(item) for item in observed_mask]
+            if self.minimax_config.uncertainty_mode == "group":
+                snapshot = estimate_group_snapshot(
+                    losses=detached_losses,
+                    group_ids=group_ids,
+                    observed_mask=bool_observed_mask,
+                )
+                snapshot = _apply_online_mnar_assumption(
+                    snapshot,
+                    bool_observed_mask,
+                    self.minimax_config,
+                )
+                q_values = (
+                    self._adversary.update(snapshot)
+                    if model.training
+                    else self._adversary.current_q(snapshot)
+                )
+                example_weights = compute_example_weights(
+                    snapshot=snapshot,
+                    group_ids=group_ids,
+                    observed_mask=bool_observed_mask,
+                    q_values=q_values,
+                )
+            else:
+                observation_rate = self.minimax_config.assumed_observation_rate or _empirical_observation_rate(
+                    bool_observed_mask
+                )
+                if self.minimax_config.uncertainty_mode == "score":
+                    q_values = (
+                        self._adversary.update(detached_losses, observation_rate)
+                        if model.training
+                        else self._adversary.current_q(detached_losses, observation_rate)
+                    )
+                elif self.minimax_config.uncertainty_mode == "time_varying":
+                    if time_indices is None:
+                        raise ValueError("time metadata is required for time_varying uncertainty.")
+                    q_values = (
+                        self._adversary.update(detached_losses, observation_rate, [int(v) for v in time_indices])
+                        if model.training
+                        else self._adversary.current_q(detached_losses, observation_rate, [int(v) for v in time_indices])
+                    )
+                else:
+                    if time_indices is None or history_scores is None:
+                        raise ValueError("time and history metadata are required for Knightian-style uncertainty.")
+                    time_values = [int(v) for v in time_indices]
+                    history_values = [float(v) for v in history_scores]
+                    q_values = (
+                        self._adversary.update(detached_losses, observation_rate, time_values, history_values)
+                        if model.training
+                        else self._adversary.current_q(detached_losses, observation_rate, time_values, history_values)
+                    )
+                example_weights = compute_score_based_weights(
+                    bool_observed_mask,
+                    q_values,
+                )
             weight_tensor = per_example_losses.new_tensor(example_weights)
             loss = (per_example_losses * weight_tensor).sum()
             if return_outputs:

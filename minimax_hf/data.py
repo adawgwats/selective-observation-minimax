@@ -34,6 +34,7 @@ def validate_dataset_columns(
     group_key: str,
     observed_key: str,
     require_observed_key: bool = False,
+    extra_required_keys: Sequence[str] = (),
 ) -> None:
     if dataset is None:
         return
@@ -47,6 +48,7 @@ def validate_dataset_columns(
     required = {group_key}
     if require_observed_key:
         required.add(observed_key)
+    required.update(extra_required_keys)
 
     missing = sorted(required - columns)
     if missing:
