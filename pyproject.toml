@@ -35,10 +35,6 @@ wilds = [
 ag = [
   "ag-survival-sim @ git+https://github.com/adawgwats/ag-survival-sim.git",
 ]
-ag_game = [
-  "flask>=3.0",
-  "rich>=13.7",
-]
 ag_price = [
   "statsmodels>=0.14",
 ]
@@ -50,8 +46,6 @@ minimax-compare-baselines = "minimax_core.comparison:main"
 minimax-ag-benchmark = "minimax_core.ag_benchmark:main"
 minimax-ag-trace = "minimax_core.ag_benchmark:trace_main"
 minimax-ag-visualize = "minimax_core.ag_benchmark:trace_main"
-minimax-ag-game = "minimax_ag_game.cli:main"
-minimax-ag-game-ui = "minimax_ag_game.web_ui:main"
 minimax-hf-portfolio-benchmark = "minimax_core.hf_portfolio_benchmark:main"
 minimax-hf-portfolio-multiseed = "minimax_core.hf_portfolio_benchmark:multiseed_main"
 minimax-hf-portfolio-seed-grid = "minimax_core.hf_portfolio_benchmark:seed_grid_main"
@@ -63,4 +57,4 @@ markers = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["minimax_core*", "minimax_hf*", "minimax_ag_game*"]
+include = ["minimax_core*", "minimax_hf*"]
