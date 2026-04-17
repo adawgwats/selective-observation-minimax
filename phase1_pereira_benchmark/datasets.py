@@ -297,7 +297,20 @@ def load_all() -> dict[str, LoadedDataset]:
     return {name: loader() for name, loader in REGISTRY.items()}
 
 
+def _drop_nan_rows(ds: LoadedDataset) -> LoadedDataset:
+    """Drop rows with any NaN in X. Pereira uses 'complete' datasets — this ensures we match."""
+    if not hasattr(ds.X, "isna"):
+        return ds
+    keep = ~ds.X.isna().any(axis=1)
+    if keep.all():
+        return ds
+    from dataclasses import replace
+    X_clean = ds.X[keep].reset_index(drop=True)
+    y_clean = ds.y[keep.to_numpy()]
+    return replace(ds, X=X_clean, y=y_clean, notes=ds.notes + f" [dropped {(~keep).sum()} rows with NaN in X]")
+
+
 def load(name: str) -> LoadedDataset:
     if name not in REGISTRY:
         raise ValueError(f"Unknown dataset {name!r}. Known: {sorted(REGISTRY)}")
-    return REGISTRY[name]()
+    return _drop_nan_rows(REGISTRY[name]())
