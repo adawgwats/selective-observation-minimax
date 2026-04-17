@@ -1,0 +1,2080 @@
+=== PAGE 142 ===
+Chapter 9
+characteristics introduced by the proposed generation strategies.
+The conclusions ob-
+tained from this benchmark study can also help to understand which imputation methods
+may be more suitable for the diﬀerent MNAR settings, leading to a set of guidelines that
+can be used by other researches and practitioners.
+The experimental setup uses 10 public datasets from the medical context, which was
+chosen because it suﬀers frequently from missing data under MNAR assumptions, making
+it an ideal test bed for a study such as this one [74]. Furthermore, since all datasets are
+public, the study can be easily replicated. The setup considers ﬁve levels of missingness
+(10%, 20%, 40%, 60%, and 80%) and the results are evaluated individually for continuous,
+categorical, and mixed data types, using the mean absolute error (MAE) metric. A detailed
+discussion is presented about the conclusions obtained with the experiment, containing a
+set of guidelines as the take-home message.
+The remainder of the chapter is organized in the following way: Section 9.1 introduces
+the new artiﬁcial generation strategies to generate MNAR values; Section 9.2 describes
+the experimental setup used in the benchmark study; Section 9.3 presents the obtained
+experimental results; ﬁnally, Section 9.4 discusses the results and conclusions extracted
+from them.
+9.1
+Proposed Strategies
+Regarding the artiﬁcial generation of MNAR values, the existing approaches are rather
+limited [97]. The most common approach is to remove the lowest values of a selected
+feature up to a predeﬁned missing rate [112].
+Alternatively, the highest values of the
+feature can be removed instead [124]. Since this approach is univariate (i.e., the missing
+values are generated in a single feature), the feature most correlated with the class labels
+is often chosen [112]. This strategy poses a major limitation: since it requires ordering
+the feature to ﬁnd its lowest or highest values, only continuous and ordinal data types
+are supported, not nominal features. For multivariate scenarios, Garciarena et al. [32]
+proposed an extension of the described univariate approach to work on several features,
+called Missingness depending on its Value Itself (MIV). The strategy is essentially the
+same: the lowest values are removed, but now for several previously selected features.
+The missingness rate is global for all features, being therefore divided by the selected
+ones. The same authors also proposed another mechanism called Missing depending on
+unobserved Variables (MuOv), where the generated missing values are related to a feature
+not included in the dataset. The approach randomly selects N patterns to be missing up
+to a certain rate (since the causative features are unknown), and the values from these
+patterns are removed. Twala et al. [112] used the same approach, but the features are
+aggregated in pairs or triplets and only one feature from each set is injected with missing
+values. Ali et al. [3] proposed a diﬀerent multivariate strategy where each feature is split
+118
+
+=== PAGE 143 ===
+Artiﬁcial Generation of Missing Data
+into two groups: one with all values no larger than the feature’s median, and another with
+the remaining values. One of the groups is then randomly chosen to have values removed
+in an amount equal to twice the missing rate, therefore respecting the quotas needed to
+achieve the global missing rate deﬁned for the dataset. Zhu et al. [130] and Pan et al. [73]
+followed the same strategy for continuous and ordinal features, but extended it to nominal
+data by dividing the categories into two equally-sized groups. Since these approaches work
+only with half of the observations (considering the split in two groups), the global missing
+rate is limited to 50%.
+In conclusion, the existing artiﬁcial generation strategies for MNAR are rather limited
+and do not cover realistic settings for this mechanism. Therefore, four new strategies are
+introduced in this work: three are entirely novel (Sections 9.1.2, 9.1.3 and 9.1.4), and the
+remaining one comprises several new variants of a common strategy (Section 9.1.1).
+9.1.1
+Missingness Based on Own Values
+The Missingness Based on Own Values (MBOV) is the most common strategy to generate
+missing values under the MNAR mechanism. It makes the assumption that the missingness
+at a value depends on itself. Therefore, the lower values of a selected feature are removed
+upon a certain missing rate [112]. Alternatively, the higher values can be chosen instead
+[124]. For reasons previously stated, MBOV can not be applied to nominal features.
+Besides considering the default behavior of this strategy, two variants are introduced in this
+work to better mimic real-world scenarios. A ﬁrst variant adds a stochastic component
+to the generation, which is controlled by a scalar p that represents the fraction of the
+missing values to be randomly chosen, therefore following the MCAR mechanism. The
+remaining missing values are generated under MNAR assumptions, with the lower values
+being removed. The key idea is to add a certain amount of randomness to an otherwise
+deterministic MNAR mechanism.
+The scalar p controls the level of randomness: for
+p = 1, the generation is entirely random, which means the missing values would all be
+under the MCAR mechanism; on the other hand, for p = 0, the generation would follow
+the default deterministic MNAR behavior. Therefore, to keep most of the missing values
+under MNAR assumptions, this value should satisfy 0 < p < 0.5. The second variant is an
+alternative to the default behavior where the values of a selected feature closest to middle
+are removed instead of the lowest or highest values. The goal is to simulate a scenario
+where extreme values are more often reported, while the more common values (i.e., closer
+to the mean/median) are more easily kept out. As an example, in an healthcare context,
+physicians tend to report values considered to be out of the expected domain, but often
+disregard values within the normal range. An example of these variants is available in
+Figure 9.1.
+119
+
+=== PAGE 144 ===
+Chapter 9
+𝑥1
+𝑥2
+...
+𝑥p
+𝑥2'
+𝑥2''
+𝑥2'''
+Figure 9.1: Example of the MBOV variants with a 40% missing rate. Gray instances of
+x2 are missing values based on lower-values removal with p = 0 (x′
+2) and p = 0.25 (x′′
+2)
+values under MCAR, and middlemost-values removal (x′′′
+2 ). The magnitude of x2 values
+is represented by a gradient of the blue color.
+9.1.2
+Missingness Based on Unobserved Values
+The Missingness Based on Unobserved Values (MBUV) is based on a common MAR
+generation strategy, where the missing values are related with an observed feature of the
+dataset. To transpose this strategy for a MNAR context, this relation must be established
+with an unobserved feature (i.e., a feature not available in the dataset).
+Therefore, a
+new random continuous feature is generated, following a normal distribution, and its
+extreme instances (i.e., those with the lowest and highest values) are set to have missing
+values on a selected feature from the dataset. The approach is similar to the Missing
+depending on unobserved Variables (MuOv) from [32], with two main diﬀerences: MuOv
+provides multivariate generation by performing the described logic for several features,
+while MBUV is univariate (although it can be extended for multivariate scenarios easily,
+as seen in Section 9.1.4); and MuOv has a random process to choose the instances injected
+with the missing values, while MBUV divides the desired missing rate in half and selects
+the edge instances upon this threshold.
+This strategy is applicable to any data type
+(including nominal features), since it only requires the unobserved feature to be ordered.
+An example of this strategy is available in Figure 9.2.
+9.1.3
+Missingness Based on Intra-Relation
+The Missingness Based on Intra-Relation (MBIR) is a novel strategy that tries to identify
+a likely MAR relation and transform it to MNAR. The approach relies on two features
+of the dataset: the one that will have the missing values (fmiss) and another one used
+to establish the MAR relation (fobs).
+The fmiss feature is selected a priori and can
+be of any type, but the fobs feature is selected in an iterative process. The instances
+containing the lowest values of each continuous and ordinal feature in the dataset (with
+the exception of fmiss) are set to be missing for the fmiss feature, upon a certain missing
+rate. An auxiliary missing indicator feature (find) is created for fmiss, being set to 1
+120
+
+=== PAGE 145 ===
+Artiﬁcial Generation of Missing Data
+𝑥1
+𝑥2
+𝑥3
+...
+𝑥p
+𝒩(0,1)
+Figure 9.2: Example of the MBUV strategy with a 40% missing rate. Gray instances of
+x3 are missing values, which are based on the edge values of the new random continuous
+feature (rightmost one). The magnitude of its values is represented by a gradient of the
+blue color.
+for the instances where the values are missing, and set to 0 for the remaining ones. The
+diﬀerences between the values of fobs for both groups (find = 1 and find = 0) are
+then assessed through statistical tests, and if, the diﬀerences are found to be signiﬁcant,
+the generated missingness is likely to be MAR. From all the iterations which meet the
+previous criteria, the one with the most signiﬁcant diﬀerences is chosen and the respective
+fobs feature is deleted. As stated before, the goal is to transform a likely MAR scenario
+into MNAR, which is achieved by deleting fobs since the relation found with an existent
+feature of the dataset becomes a relation with an unobserved feature. Pseudo code of the
+described MBIR procedure is presented in Algorithm 4.
+Algorithm 4 Pseudocode for the MBIR procedure.
+Input: dataset, fmiss, mr
+Output: amputed dataset
+1: for each fobs in continuous and ordinal features of dataset \ {fmiss} do
+2:
+Find the instances instmr with the lower mr% values of fobs
+3:
+Set the fmiss values to be missing on the instmr instances
+4:
+Create the missing indicator find for fmiss (find = 1 when missing, find = 0
+otherwise)
+5:
+Find if the diﬀerences between fobs values for find = 1 and find = 0 are statistically
+signiﬁcant
+6:
+if diﬀerences are statistically signiﬁcant then
+7:
+Save fobs to MARfobs
+8:
+end if
+9: end for
+10: Select the fobs from MARfobs associated with the iteration that presented the most
+statistically signiﬁcant diﬀerences
+11: Create amputed dataset by applying lines 2 and 3 to the dataset
+12: Delete the selected fobs feature from amputed dataset
+13: return amputed dataset
+The MBIR strategy relies on statistical tests to identify scenarios that are likely to be
+MAR. To make that identiﬁcation more resilient, two diﬀerent statistical approaches are
+121
+
+=== PAGE 146 ===
+Chapter 9
+proposed here: a classic method, based on frequentist statistics, and a method based on
+Bayesian statistics. Both approaches are intended for two-sample scenarios, and evaluate if
+both samples are signiﬁcantly diﬀerent. For the frequentist approach, the Mann-Whitney
+rank test [61] is used to evaluate if the fobs values for find = 1 and find = 0 are diﬀerent
+with a statistical signiﬁcance level of α = 0.05. This test is non-parametric and does not
+require a normality assumption, which is an advantage when comparing to the well-known
+t-test. For the Bayesian approach, a Bayes factor computed for a two-sample design [68]
+is used to evaluate the same two groups of fobs values. Following the signiﬁcance scale
+proposed in [49], Bayes factors ≥10 show, at least, strong evidence of diﬀerences between
+the samples.
+9.1.4
+Missingness Based on Own and Unobserved Values
+The Missingness Based on Own and Unobserved Values (MBOUV) is a combination of
+the MBOV and MBUV approaches to perform multivariate generation of missing values.
+The desired missingness rate is considered global for the entire dataset and is randomly
+distributed by all its features, leading to diﬀerent levels of missingness in those features.
+Afterwards, the generation follows two rules: the MBUV is applied to all nominal features
+and to half of the continuous ones, while the MBOV (with lower values removal) is applied
+to the remaining half of the features. Both approaches are applied in an iterative way,
+and the split of continuous features is performed randomly.
+9.2
+Benchmark Setup
+To properly conduct the benchmark study, a comprehensive baseline of state-of-the-art im-
+putation methods was chosen. These methods are brieﬂy described in Table 9.1. Further-
+more, the autoencoder-based methods (DAE and VAE) require the hyper-parameterization
+of their neural network architectures, which are described in Table 9.2.
+The experiment was conducted with 10 public medical datasets, which address diﬀerent
+domains of clinical research based on routinely collected data. As previously stated, this
+type of data is ideal since it often suﬀers from missing data under MNAR [74].
+All
+these datasets are public and available at the UCI1 Machine Learning Repository. Their
+diverse characteristics, both in terms of the number of instances and types of features, are
+presented in Table 9.3.
+The used datasets are complete (i.e., do not have missing data) and, during the experiment,
+they are injected with missing values under MNAR mechanisms using the approaches de-
+scribed in Section 9.1 (a process often called amputation). This approach was applied
+1https://archive.ics.uci.edu/ml/datasets.php
+122
+
+=== PAGE 147 ===
+Artiﬁcial Generation of Missing Data
+Table 9.1: Baseline of imputation methods used for the benchmark.
+Method
+Description
+Denoising Autoencoder (DAE)
+An autoencoder is a neural network that learns a com-
+pressed representation of the input data, aiming to output
+a reconstruction of that same data [18]. A DAE is trained
+with a corrupted version of the input data, which is created
+by adding noise. In the missing data context, the “noise”
+is assumed to be the removal of values [22, 118].
+Variational Autoencoder (VAE)
+Autoencoder trained to learn a Gaussian multivariate la-
+tent representation of the input data, generating new val-
+ues by sampling from this Gaussian. [44, 65].
+k-Nearest Neighbors (kNN)
+Imputation with k = 5
+Finds the k nearest neighbors of the record with missing
+values (using the Euclidean distance) and imputes with the
+average values (for continuous features) or the most com-
+mon ones (for categorical features) from the k neighbors
+[95].
+Mean/Mode Imputation
+The mean (for continuous features) or the mode (for cate-
+gorical features) is used to impute.
+Multiple Imputation by Chained
+Equations (MICE)
+Fits iteratively several regression models through a mul-
+tiple imputation strategy, assuming as the dependent fea-
+tures the ones containing missing data [15].
+SoftImpute
+Matrix completion process, achieved through a nuclear-
+norm regularization iterative approach, where the missing
+data is imputed with estimated values obtained with a soft-
+thresholded SVD [64].
+Table 9.2: Architecture details of the autoencoder-based methods.
+Aspect
+Conﬁguration
+DAE Structure
+Two hidden layers with 10 units and ReLU activation function.
+VAE Structure
+Two hidden layers with 10 units, plus the three layers needed for the
+generative process: two “parallel” layers (mean and variance) with
+10 units, connected to another one that samples new points from the
+latent Gaussian distribution.
+Optimization
+Algorithm
+Adam, with the MSE loss and a learning rate of 0.001.
+Training
+Procedure
+Batches of 64 instances, for a maximum of 2000 epochs, early stop-
+ping, and learning rate reduction of 80% when the validation loss
+shows no improvements in 100 consecutive epochs.
+Overﬁtting
+Mitigation
+Each hidden layer under L2 regularization with 0.01 weight.
+Network
+Initialization
+Network weights are randomly sampled from a truncated normal dis-
+tribution centered at zero.
+Output
+Sigmoid activation function, since the data is normalized to the range
+[0, 1].
+iteratively to each feature, excepted for the MBOUV since it provides multivariate am-
+putation. The imputation results were assessed through the mean absolute error (MAE)
+between the complete dataset (i.e., ground truth) and the imputed one.
+For nominal
+123
+
+=== PAGE 148 ===
+Chapter 9
+Table 9.3: Details of the medical datasets used in the study.
+Dataset
+# Instances
+# Features
+Categorical
+Continuous
+bc-coimbra
+116
+1
+9
+cleveland
+303
+7
+7
+cmc
+1473
+8
+2
+ctg
+2126
+2
+23
+pima
+768
+1
+8
+saheart
+462
+2
+8
+thyroid
+7200
+16
+6
+transfusion
+748
+1
+4
+vertebral
+310
+1
+5
+wisconsin
+569
+1
+30
+features, this metric is applied to the one-hot encoded vectors, and the results are then
+transformed into error rates that are in the same scale of the continuous and ordinal fea-
+tures. For aggregation purposes, the overall MAE of a dataset is calculated by averaging
+the MAE of all its features. A high-level representation of this procedure is shown in
+Figure 9.3.
+train
+val.
+test
+MNAR 
+generation
+imputation
+MR = {10, 20, 40, 60, 80} %
+evaluation
+(mean of all features)
+Mean Absolute Error
+Figure 9.3: High-level representation of the benchmark setup.
+All datasets were normalized to the interval [0, 1] and split into train (50%), validation
+(20%) and test (30%) sets, which are used by the methods that require a training pro-
+cedure. The data split was performed in a stratiﬁed manner to ensure equal missingness
+rates and MNAR assumptions for all sets. The one-hot encoding procedure was applied
+to the categorical features after the missing data injection. The benchmark study covered
+ﬁve missing rates (10%, 20%, 40%, 60% and 80%), which allows a complete analysis of the
+imputation results with diﬀerent levels of missingness. The autoencoder-based methods
+124
+
+=== PAGE 149 ===
+Artiﬁcial Generation of Missing Data
+require a pre-imputation of the missing values, which was performed with the mean/mode
+of the features.
+The experiment was independently executed 30 times.
+The datasets were shuﬄed in
+each execution, and the ﬁnal results are the average of these 30 runs. Furthermore, the
+results are provided with 95% conﬁdence intervals for signiﬁcance evaluation: if in a
+given experiment, two imputation methods have MAE results with overlapping conﬁdence
+intervals, the diﬀerence between those results is not considered statistically signiﬁcant.
+9.3
+Experimental Results
+In this section, we present and analyze the experimental results. To properly understand
+the imputation patterns in diﬀerent types of data, the analysis is ﬁrst performed sepa-
+rately for continuous and categorical features (Sections 9.3.1 and 9.3.2, respectively) and,
+afterwards, for all features together (Section 9.3.3). The results obtained for each appli-
+cable MNAR generation strategy are discussed individually in each of the Subsections,
+while the general conclusions are discussed in Section 9.4. The results are presented us-
+ing charts where the MAE values for each missingness rate are plotted for all imputation
+approaches. The 95% conﬁdence intervals of the results are displayed as translucent grey
+areas behind the plotted points and lines. When these intervals overlap for diﬀerent impu-
+tation methods, the grey areas become more opaque, which means the diﬀerences between
+the results of those methods are not statistically signiﬁcant. For a more detailed view of
+the experimental results, the raw data is attached in Section 9.5.
+9.3.1
+Continuous Features
+The following subsections present the results for the MBOV, MBUV, and MBIR strategies
+applied to continuous features.
+9.3.1.1
+Missingness Based on Own Values (MBOV)
+Figure 9.4 shows the results for the MBOV approach with the lowest values being re-
+moved. While the SoftImpute, followed by MICE, present the best results for lower rates
+(minimum MAEs of 0.084 and 0.1, respectively), AE-based imputation, particularly the
+VAE, performs better at higher rates (minimum MAE of 0.075), with the inﬂection point
+around the 40% rate.
+Figure 9.5 shows the MBOV’s results but with the highest values being removed. The
+main conclusions regarding the best and worst imputation approaches are essentially the
+same obtained for MBOV with lowest-value removal. The exception is the SoftImpute
+125
+
+=== PAGE 150 ===
+Chapter 9
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBOV (Lower)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.30
+0.25
+0.20
+0.15
+0.10
+0.05
+Figure 9.4: Results for MBOV with lowest values being removed, applied to continuous
+features.
+method, which achieved signiﬁcantly worse results in this setting (only the mean impu-
+tation presented worst results). Therefore, the MICE method obtained the best MAE
+(0.152) for lower missingness rates, while AE-based imputation achieved again the best
+results for the higher rates (minimum MAE of 0.087 for the VAE). The inﬂection point
+appears to be around the 30% rate in this setting. There is also an inversion of the MAE
+trend when the missing rate increases. For the MBOV with lowest-value removal, the
+MAE tends to increase gradually with the missing rate, except for the Autoencoder meth-
+ods where the opposite happens. For the MBOV with higher-value removal, the MAE
+tends to decrease with the missing rate in all imputation methods. Although this change
+of behavior is probably related to the features’ distribution, it is important to notice that
+the autoencoder methods are both consistent in terms of results and behavior. In both
+MBOV settings, the worst results were obtained by the mean imputation (maximum MAE
+of 0.332).
+Figure 9.6 presents the results for the MBOV approach when a quarter of the missing values
+are randomly chosen (p = 0.25), therefore being under MCAR assumptions. Here, the
+SoftImpute method is consistently the best (minimum MAE of 0.08), being only slightly
+surpassed by the VAE for the 80% rate (MAE of 0.088). The worst results were again
+obtained by the mean imputation (maximum MAE of 0.201). The pattern of results is
+similar to the MBOV with lowest-value removal, but the 25% MCAR values lead to a
+signiﬁcant improvement of the SoftImpute results.
+Figure 9.7 shows the results for the MBOV approach with the middlemost values being
+removed. This is the MBOV setting where the pattern at the results is more diﬀerent.
+Up to the 40% missingness rate, the results do not present signiﬁcant diﬀerences between
+126
+
+=== PAGE 151 ===
+Artiﬁcial Generation of Missing Data
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBOV (Higher)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.35
+0.30
+0.25
+0.20
+0.15
+0.10
+0.05
+Figure 9.5: Results for MBOV with highest values being removed, applied to continuous
+features.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBOV (Stochastic)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.25
+0.20
+0.15
+0.10
+0.05
+Figure 9.6: Results for MBOV with partial random missingness, applied to continuous
+features.
+most imputation methods. The exception is the kNN imputation, which is consistently
+the worst for all rates (maximum MAE of 0.132). Nevertheless, for the 10% and 20%
+rates, the mean imputation shows the best results (minimum MAE of 0.038). Since the
+values being removed are the middlemost ones, there is a good chance they will be close
+to the features’ mean, which can justify these results. However, above the 40% rate, the
+diﬀerent imputation methods tend to produce results with more signiﬁcant diﬀerences.
+For the 40%, 60%, and 80% rates, VAE outperforms the remaining methods (minimum
+MAE of 0.052).
+127
+
+=== PAGE 152 ===
+Chapter 9
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBOV (Centered)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.15
+0.10
+0.05
+0
+Figure 9.7: Results for MBOV with middlemost values removal, applied to continuous
+features.
+9.3.1.2
+Missingness Based on Unobserved Values (MBUV)
+Figure 9.8 presents the results for the MBUV missingness mechanism. In this setting all
+imputation approaches present consistent MAE values for all rates, except the SoftImpute,
+which tends to perform worse with higher rates. The best imputation was achieved by
+the MICE method (minimum MAE of 0.062) and the worst by the mean imputation
+(maximum MAE of 0.119).
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBUV
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.15
+0.10
+0.05
+Figure 9.8: Results for MBUV applied to continuous features.
+128
+
+=== PAGE 153 ===
+Artiﬁcial Generation of Missing Data
+9.3.1.3
+Missingness Based on Intra-Relation (MBIR)
+Regarding the MBIR generation, Figures 9.9 and 9.10 show the results for the frequentist
+and Bayesian tests (see Subsection 9.1.3), respectively. The results obtained using both
+tests are essentially the same, with small MAE diﬀerences that can be accounted by
+the stochastic nature of some methods. The best and worst methods were respectively
+the MICE (minimum MAE of 0.065) and mean imputation (maximum MAE of 0.161),
+consistently throughout all missing rates. There is a slight increase in the MAE values
+when the missing rate grows, except for the AE-based methods, where the behavior is
+the opposite.
+Furthermore, the diﬀerences between the MAE values of the kNN and
+SoftImpute methods are not signiﬁcant since their conﬁdence intervals overlap often.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBIR (Frequentist)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.20
+0.15
+0.10
+0.05
+Figure 9.9: Results for MBIR with the frequentist test, applied to continuous features.
+9.3.2
+Categorical Features
+The following subsections present the results for the MBUV and MBIR mechanisms ap-
+plied to categorical features.
+9.3.2.1
+Missingness Based on Unobserved Values (MBUV)
+Figure 9.11 presents the results for the MBUV approach.
+An immediately noticeable
+aspect is the large conﬁdence intervals displayed by all imputation methods, which leads
+to an absence of signiﬁcantly best and worst methods when considering the amount of
+overlap. The clearest diﬀerences are between the mode imputation and the SoftImpute
+methods, both appearing to be signiﬁcantly worse than the remaining ones. Nevertheless,
+mode imputation shows the worst MAE up to the 60% rate, being surpassed by SoftImpute
+129
+
+=== PAGE 154 ===
+Chapter 9
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Continuous Features - MBIR (Bayesian)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.20
+0.15
+0.10
+0.05
+Figure 9.10: Results for MBIR with the Bayesian test, applied to continuous features.
+after that rate (maximum MAEs of 0.188 and 0.205, respectively). The best MAE values
+are obtained with the MICE method, which is only slightly surpassed by the VAE after
+the 60% rate (minimum MAEs of 0.125 and 0.134, respectively).
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Categorical Features - MBUV
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.25
+0.20
+0.15
+0.10
+Figure 9.11: Results for MBUV applied to categorical features.
+9.3.2.2
+Missingness Based on Intra-Relation (MBIR)
+Figures 9.12 and 9.13 present the MBIR results for the frequentist and Bayesian tests,
+respectively.
+Once again there are no signiﬁcant diﬀerences between the MAE values
+obtained with both statistical tests. Moreover, the exact same patterns of results found
+for the MBUV mechanism are visible here: large conﬁdence intervals that often overlap,
+130
+
+=== PAGE 155 ===
+Artiﬁcial Generation of Missing Data
+although this overlap tends to fade away above the 60% rate; the mode imputation and
+the SoftImpute methods still provide the worst MAE values, although the mode achieved
+worse results in this setting (maximum MAE of 0.221); MICE is generally the best method
+(minimum MAE of 0.111), although now it is surpassed by both AE-based methods beyond
+the 60% missingness rate (minimum MAE of 0.131 for the VAE).
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Categorical Features - MBIR (Frequentist)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.25
+0.20
+0.15
+0.10
+Figure 9.12: Results for MBIR with the frequentist test, applied to categorical features.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Categorical Features - MBIR (Bayesian)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.25
+0.20
+0.15
+0.10
+Figure 9.13: Results for MBIR with the Bayesian test, applied to categorical features.
+9.3.3
+Mixed Features
+The following subsections present the results for the MBUV, MBIR, and MBOUV mech-
+anisms applied to all features.
+131
+
+=== PAGE 156 ===
+Chapter 9
+9.3.3.1
+Missingness Based on Unobserved Values (MBUV)
+Figure 9.14 shows the results for MBUV. The conclusions are the same obtained for this
+generation approach when only continuous features were considered: the MAE values are
+consistent for all missing rates, with the single exception of SoftImpute that performs worse
+with rates above 60%. The best imputation results were achieved by the MICE method
+(minimum MAE of 0.076) and the worst by the mean/mode imputation (maximum MAE
+of 0.131). In fact, when comparing with continuous features only, the MAE values in this
+mixed features setting are shifted towards higher errors. This is a clear indicator that
+the categorical features have a negative impact on the results, suggesting that all these
+methods tend to perform better with continuous features.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Mixed Features - MBUV
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.15
+0.10
+0.05
+Figure 9.14: Results for MBUV applied to all (mixed) features.
+9.3.3.2
+Missingness Based on Intra-Relation (MBIR)
+The MBIR results for the frequentist and Bayesian tests are, respectively, available on
+Figures 9.15 and 9.16. Following the pattern found with the continuous and categorical
+cases, there are no signiﬁcant diﬀerences between both statistical tests. In fact, similarly
+to what happened with the MBUV results, the conclusions found here for MBIR are
+the same found when only the continuous features were considered: the best and worst
+methods continue to be the MICE (minimum MAE of 0.076) and mean/mode imputation
+(maximum MAE of 0.17) for all missing rates, expect for the 80% rate where the VAE
+surpasses MICE (minimum MAE of 0.101). The kNN and SoftImpute methods continue
+to not show signiﬁcantly diﬀerent results. Moreover, as previously found for the MBUV
+mechanism, the MAE results are shifted towards worse values in this mixed setting when
+comparing to the continuous features setting.
+132
+
+=== PAGE 157 ===
+Artiﬁcial Generation of Missing Data
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Mixed Features - MBIR (Frequentist)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.20
+0.15
+0.10
+0.05
+Figure 9.15: Results for MBIR with the frequentist test, applied to all (mixed) features.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Mixed Features - MBIR (Bayesian)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+0.20
+0.15
+0.10
+0.05
+Figure 9.16: Results for MBIR with the Bayesian test, applied to all (mixed) features.
+9.3.3.3
+Missingness Based on Own and Unobserved Values (MBOUV)
+Figure 9.17 presents the results for the MBOUV mechanism. Up to the 40% rate, there
+are no signiﬁcant diﬀerences among the MAE values of the imputation methods, with the
+exception of mean/mode imputation, which clearly yields worse results (maximum MAE
+of 0.212). The MICE and kNN methods appear to provide slightly better results for the
+10% and 20% rates, but the improvements are not signiﬁcant (minimum MAEs of 0.113
+and 0.114, respectively). However, for rates above 40%, there is a disparity between the
+imputation methods, with the AEs gradually showing signiﬁcant improvements relatively
+to the remaining approaches (minimum MAE of 0.139 for the DAE). An interesting aspect
+133
+
+=== PAGE 158 ===
+Chapter 9
+is that for higher rates, MICE presents the worst results by a considerable margin (the
+MAE value for the 80% rate was clipped). This behavior diﬀers from previous experiments
+where MICE presented consistently good results and small conﬁdence intervals for the
+univariate scenarios.
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+Mixed Features - MBOUV (Multivariate)
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+MAE
+1.00
+0.95
+0.90
+0.85
+0.80
+0.75
+0.70
+0.65
+0.60
+0.55
+0.50
+0.45
+0.40
+0.35
+0.30
+0.25
+0.20
+0.15
+0.10
+0.05
+0
+Figure 9.17: Results for MBOUV applied to all (mixed) features.
+9.4
+Discussion and Future Directions
+After compiling all the results previously analyzed, there are several main conclusions that
+can be argued. To help this discussion, Table 9.4 presents a summary of the results by
+showing the best imputation method for each missingness rate, MNAR mechanism and
+data type. The methods marked with * presented statistically signiﬁcant improvements
+compared to all the remaining ones.
+When the rate is low or medium (up to 60%), the best imputation is very often achieved
+by the MICE method. However, for half of the MBOV settings, the SoftImpute method
+showed superior results, although MICE immediately follows with very close errors. The
+single exception is for MBOV with the middlemost values being removed, where the mean
+imputation surpassed these methods. Nevertheless, the superior consistency of the MICE
+results is undeniable with the low and medium levels of missingness. However, for larger
+rates (above 60%), MICE loses accuracy and is often surpassed by the AE-based methods
+(VAE and DAE), which are the best ones for these high levels of missingness with the
+MBOV, MBOUV, and all categorical features settings. A plausible justiﬁcation is that,
+with lower missing rates, the amount of information available is still enough for methods
+usually applied in MAR contexts (such as MICE and SoftImpute) to still achieve the best
+results. In such settings, the MNAR assumptions are weaker, which leads to a lower level of
+134
+
+=== PAGE 159 ===
+Artiﬁcial Generation of Missing Data
+Table 9.4: Best imputation method for each missing rate, MNAR generation and data
+type.
+The methods which presented statistically signiﬁcant improvements are marked
+with an asterisk.
+Data Type
+MNAR Generation
+Missing Rate
+10%
+20%
+40%
+60%
+80%
+Continuous
+MBOV (Lower)
+SoftImp∗
+SoftImp∗
+SoftImp∗
+VAE∗
+VAE∗
+MBOV (Higher)
+MICE∗
+MICE∗
+VAE∗
+VAE∗
+VAE∗
+MBOV (Stochastic)
+SoftImp
+SoftImp∗
+SoftImp∗
+SoftImp∗
+VAE∗
+MBOV (Centered)
+Mean/Mode∗
+Mean/Mode
+VAE
+VAE∗
+VAE∗
+MBUV
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MBIR (Frequentist)
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MBIR (Bayesian)
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+Categorical
+MBUV
+MICE
+MICE
+MICE
+VAE
+VAE
+MBIR (Frequentist)
+MICE
+MICE
+MICE
+VAE
+VAE
+MBIR (Bayesian)
+MICE
+MICE
+MICE
+VAE
+VAE
+Mixed
+MBUV
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+MBIR (Frequentist)
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+VAE
+MBIR (Bayesian)
+MICE∗
+MICE∗
+MICE∗
+MICE∗
+VAE
+MBOUV (Multivariate)
+MICE
+KNN
+DAE
+DAE
+DAE
+uncertainty while performing the imputation, since this process is eased by the available
+information. This is visible in the MBOV setting with a stochastic component, where
+25% of the missing values are under MCAR (which weakens the MNAR assumptions)
+and the results for SoftImpute and MICE improve in all missing rates. Furthermore, the
+multiple imputation strategy followed by the MICE method helps to deal with the more
+noticeable uncertainty in the medium levels of missingness, which is another justiﬁcation
+for its superiority.
+For higher rates, the AE-based methods show higher resilience to noisy (i.e., corrupted)
+data and more generalization capabilities, which leads to better results. For example, in
+several MNAR scenarios applied to continuous data, their results tend to improve when
+the missing rate increases. This is a clear indicator of how well AEs deal with corrupted
+data, to the point where they improve their results with more noise mostly because it leads
+to less overﬁtting and improved generalization [120]. Besides, AEs can also capture more
+complex patterns since they rely on non-linear activation functions, while methods such
+as MICE use linear models. This is particularly relevant with high missing rates since the
+mechanism describing the missing values is expected to be more complex and uncertain.
+Moreover, AEs do not assume that the data follow a speciﬁc distribution, which is also
+helpful since the MNAR mechanism introduces deviations in the data distributions, and
+135
+
+=== PAGE 160 ===
+Chapter 9
+these deviations tend to increase when the missing rates are high. However, AEs also
+present a major limitation: they need to be trained with complete data in order to be
+applied to incomplete data. In a real-world scenario, this may be impossible to satisfy,
+since the datasets may not contain enough complete data to properly train the network.
+In this case, using AEs becomes unfeasible.
+Analyzing the signiﬁcance of the diﬀerences between imputation methods, while the re-
+sults for the continuous features present low variance and are signiﬁcantly diﬀerent, the
+opposite behavior is found for categorical features: the conﬁdence intervals are large for
+all imputation methods and consistently overlap. This pattern of results, associated with
+higher MAE values, show that all the imputation methods are more suitable for continuous
+features and most provide similar and lower imputation quality for the categorical ones.
+Regarding the consistency of the results throughout diﬀerent missingness rates, there is a
+general tendency where the imputation methods gradually perform worse when the level
+of missingness increases. This is an expected behavior since higher missing rates lead to
+more uncertainty in the imputation process. However, as previously explained, the AE-
+based methods show the opposite trend for most scenarios with continuous features, which
+makes them a natural candidate for these high levels of missingness.
+Finally, the approaches here proposed for artiﬁcial generation of MNAR provide an am-
+ple experimental setup that mimics diﬀerent characteristics of this mechanism. Although
+there is some consistency among the best and worst imputation approaches within dif-
+ferent generation approaches, the results tend to be diﬀerent both in terms of trend and
+error magnitude. The single exception would be the use of frequentist and Bayesian tests
+in the MBIR approach, since both lead to similar results. Apart from this exception, the
+experimental results show the importance of properly simulating the missing data sce-
+narios, with real-world-based and diverse strategies, in order to obtain meaningful and
+trustworthy results.
+In conclusion, these benchmark results can be summarized in the following guidelines:
+• For low and medium levels of missingness in univariate settings, the MICE and
+SoftImpute methods should be the go-to solution. For multivariate scenarios, MICE
+should be avoided;
+• For higher missing rates, AE-based methods should be considered, particularly when
+there is enough complete data to properly train the network. Otherwise, MICE and
+SoftImpute continue to be good solutions;
+• These three methods (MICE, SoftImpute, and AE) appear to deal well with depar-
+tures from the MNAR assumptions, which makes them suitable for scenarios where
+missing data mechanisms are mixed;
+• The kNN and mean/mode imputation are still among the most widely used methods
+136
+
+=== PAGE 161 ===
+Artiﬁcial Generation of Missing Data
+[32]. However, they should be avoided in MNAR settings. This conclusion comes
+without surprise, since they are often referred to as methods for MAR and MCAR;
+• All these methods can be applied to mixed data types, but they are more suitable for
+continuous data. New approaches more tailored for categorical features are needed.
+Although the imputation of categorical features can be transformed into a classiﬁ-
+cation problem, this solution does not provide a global imputation strategy for the
+dataset;
+• It is not possible to state that a speciﬁc generation strategy is better at mimicking
+the MNAR nature since they all cover diﬀerent characteristics of this mechanism.
+Instead, a mix of these strategies should be used to obtain more representative and
+reliable results.
+In the future several directions can be tackled to further explore and improve the impu-
+tation of MNAR values. The benchmark studies should be further extended to accom-
+modate settings where the missing mechanism is a composition of MNAR with MCAR
+and/or MAR, which is also a setting often found in real-world data. Furthermore, the
+impact of post-processing approaches sometimes applied to the MNAR imputation can
+also be studied and considered in the benchmark (e.g., sensitivity analysis and the ap-
+plication of the delta-adjustment method). Regarding the artiﬁcial generation of MNAR,
+there are speciﬁc settings of this mechanism that can be incorporated into new strategies.
+For example, for data domains which contain sensitive attributes, it is reasonable that the
+mechanism may only be applied to those types of attributes, while other mechanisms can
+be used for the remaining features. This would create a concept of sensitive-aware MNAR
+generation.
+9.5
+Supplementary Tables
+For a more detailed view of the experimental results, the raw data is attached in Tables
+9.5, 9.6 and 9.7 for the continuous, categorical, and mixed analysis, respectively. Each
+table presents the mean absolute error (MAE) values and their 95% conﬁdence intervals for
+each imputation method, missing rate and Missing Not At Random (MNAR) generation
+strategy.
+137
+
+=== PAGE 162 ===
+Chapter 9
+Table 9.5: Results for continuous features. The MAE values and their 95% conﬁdence intervals are presented for each imputation method.
+MNAR
+Generation
+Missing
+Rate
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+MBOV (Lower)
+10%
+0.184
+(0.18;0.19)
+0.144
+(0.14;0.15)
+0.127
+(0.12;0.13)
+0.221
+(0.22;0.23)
+0.103
+(0.10;0.11)
+0.092
+(0.09;0.10)
+20%
+0.154
+(0.15;0.16)
+0.120
+(0.12;0.12)
+0.129
+(0.13;0.13)
+0.211
+(0.21;0.22)
+0.100
+(0.10;0.10)
+0.084
+(0.08;0.09)
+40%
+0.116
+(0.11;0.12)
+0.091
+(0.09;0.09)
+0.147
+(0.14;0.15)
+0.216
+(0.21;0.22)
+0.109
+(0.10;0.11)
+0.084
+(0.08;0.09)
+60%
+0.093
+(0.09;0.09)
+0.078
+(0.08;0.08)
+0.183
+(0.18;0.19)
+0.238
+(0.23;0.24)
+0.133
+(0.13;0.14)
+0.092
+(0.09;0.09)
+80%
+0.087
+(0.08;0.09)
+0.075
+(0.07;0.08)
+0.239
+(0.24;0.24)
+0.280
+(0.28;0.28)
+0.171
+(0.17;0.18)
+0.102
+(0.10;0.10)
+MBOV (Higher)
+10%
+0.266
+(0.26;0.27)
+0.230
+(0.23;0.23)
+0.234
+(0.23;0.24)
+0.332
+(0.33;0.34)
+0.174
+(0.17;0.18)
+0.244
+(0.24;0.25)
+20%
+0.195
+(0.19;0.20)
+0.170
+(0.17;0.17)
+0.210
+(0.21;0.21)
+0.281
+(0.28;0.28)
+0.152
+(0.15;0.16)
+0.221
+(0.22;0.23)
+40%
+0.130
+(0.13;0.13)
+0.117
+(0.12;0.12)
+0.199
+(0.20;0.20)
+0.239
+(0.23;0.24)
+0.139
+(0.13;0.14)
+0.215
+(0.21;0.22)
+60%
+0.102
+(0.10;0.10)
+0.094
+(0.09;0.10)
+0.194
+(0.19;0.20)
+0.217
+(0.21;0.22)
+0.133
+(0.13;0.14)
+0.217
+(0.21;0.22)
+80%
+0.097
+(0.10;0.10)
+0.087
+(0.09;0.09)
+0.197
+(0.19;0.20)
+0.210
+(0.21;0.21)
+0.143
+(0.14;0.15)
+0.228
+(0.22;0.23)
+MBOV (Stochastic)
+10%
+0.171
+(0.17;0.17)
+0.138
+(0.13;0.14)
+0.113
+(0.11;0.12)
+0.198
+(0.19;0.20)
+0.093
+(0.09;0.10)
+0.090
+(0.09;0.09)
+20%
+0.150
+(0.15;0.15)
+0.119
+(0.12;0.12)
+0.113
+(0.11;0.12)
+0.188
+(0.18;0.19)
+0.090
+(0.09;0.09)
+0.083
+(0.08;0.09)
+40%
+0.125
+(0.12;0.13)
+0.101
+(0.10;0.10)
+0.120
+(0.12;0.12)
+0.184
+(0.18;0.19)
+0.093
+(0.09;0.10)
+0.080
+(0.08;0.08)
+60%
+0.110
+(0.11;0.11)
+0.091
+(0.09;0.09)
+0.134
+(0.13;0.14)
+0.189
+(0.19;0.19)
+0.102
+(0.10;0.11)
+0.083
+(0.08;0.09)
+80%
+0.103
+(0.10;0.10)
+0.088
+(0.09;0.09)
+0.158
+(0.15;0.16)
+0.201
+(0.20;0.20)
+0.118
+(0.11;0.12)
+0.092
+(0.09;0.09)
+MBOV (Centered)
+10%
+0.043
+(0.04;0.04)
+0.045
+(0.04;0.05)
+0.057
+(0.06;0.06)
+0.038
+(0.04;0.04)
+0.041
+(0.04;0.04)
+0.047
+(0.05;0.05)
+20%
+0.046
+(0.04;0.05)
+0.047
+(0.05;0.05)
+0.065
+(0.06;0.07)
+0.044
+(0.04;0.05)
+0.045
+(0.04;0.05)
+0.052
+(0.05;0.05)
+40%
+0.052
+(0.05;0.05)
+0.052
+(0.05;0.05)
+0.080
+(0.08;0.08)
+0.059
+(0.06;0.06)
+0.053
+(0.05;0.05)
+0.061
+(0.06;0.06)
+60%
+0.063
+(0.06;0.06)
+0.059
+(0.06;0.06)
+0.100
+(0.10;0.10)
+0.081
+(0.08;0.08)
+0.066
+(0.06;0.07)
+0.074
+(0.07;0.08)
+80%
+0.079
+(0.08;0.08)
+0.070
+(0.07;0.07)
+0.132
+(0.13;0.13)
+0.112
+(0.11;0.11)
+0.090
+(0.09;0.09)
+0.098
+(0.09;0.10)
+MBUV
+10%
+0.108
+(0.11;0.11)
+0.094
+(0.09;0.10)
+0.073
+(0.07;0.07)
+0.118
+(0.12;0.12)
+0.062
+(0.06;0.06)
+0.075
+(0.07;0.08)
+20%
+0.110
+(0.11;0.11)
+0.095
+(0.09;0.10)
+0.074
+(0.07;0.08)
+0.119
+(0.12;0.12)
+0.063
+(0.06;0.06)
+0.077
+(0.07;0.08)
+40%
+0.109
+(0.11;0.11)
+0.094
+(0.09;0.10)
+0.075
+(0.07;0.08)
+0.119
+(0.12;0.12)
+0.063
+(0.06;0.06)
+0.079
+(0.08;0.08)
+60%
+0.109
+(0.11;0.11)
+0.094
+(0.09;0.10)
+0.077
+(0.08;0.08)
+0.119
+(0.12;0.12)
+0.064
+(0.06;0.07)
+0.085
+(0.08;0.09)
+80%
+0.109
+(0.11;0.11)
+0.094
+(0.09;0.10)
+0.082
+(0.08;0.08)
+0.118
+(0.12;0.12)
+0.067
+(0.06;0.07)
+0.099
+(0.10;0.10)
+MBIR (Frequentist)
+10%
+0.120
+(0.12;0.12)
+0.097
+(0.10;0.10)
+0.082
+(0.08;0.08)
+0.138
+(0.14;0.14)
+0.069
+(0.07;0.07)
+0.081
+(0.08;0.08)
+20%
+0.109
+(0.11;0.11)
+0.091
+(0.09;0.09)
+0.081
+(0.08;0.08)
+0.132
+(0.13;0.13)
+0.065
+(0.06;0.07)
+0.079
+(0.08;0.08)
+40%
+0.108
+(0.11;0.11)
+0.092
+(0.09;0.09)
+0.092
+(0.09;0.09)
+0.142
+(0.14;0.14)
+0.074
+(0.07;0.08)
+0.087
+(0.08;0.09)
+60%
+0.105
+(0.10;0.11)
+0.091
+(0.09;0.09)
+0.098
+(0.10;0.10)
+0.145
+(0.14;0.15)
+0.077
+(0.07;0.08)
+0.093
+(0.09;0.10)
+80%
+0.105
+(0.10;0.11)
+0.091
+(0.09;0.09)
+0.111
+(0.11;0.11)
+0.156
+(0.15;0.16)
+0.084
+(0.08;0.09)
+0.114
+(0.11;0.12)
+MBIR (Bayesian)
+10%
+0.123
+(0.12;0.13)
+0.106
+(0.10;0.11)
+0.088
+(0.09;0.09)
+0.138
+(0.13;0.14)
+0.072
+(0.07;0.07)
+0.088
+(0.09;0.09)
+20%
+0.117
+(0.11;0.12)
+0.100
+(0.10;0.10)
+0.088
+(0.09;0.09)
+0.137
+(0.13;0.14)
+0.071
+(0.07;0.07)
+0.085
+(0.08;0.09)
+40%
+0.109
+(0.11;0.11)
+0.094
+(0.09;0.10)
+0.093
+(0.09;0.10)
+0.137
+(0.13;0.14)
+0.077
+(0.07;0.08)
+0.089
+(0.09;0.09)
+60%
+0.105
+(0.10;0.11)
+0.092
+(0.09;0.09)
+0.105
+(0.10;0.11)
+0.152
+(0.15;0.15)
+0.081
+(0.08;0.08)
+0.099
+(0.10;0.10)
+80%
+0.105
+(0.10;0.11)
+0.092
+(0.09;0.09)
+0.125
+(0.12;0.13)
+0.161
+(0.16;0.16)
+0.085
+(0.08;0.09)
+0.118
+(0.12;0.12)
+138
+
+=== PAGE 163 ===
+Artiﬁcial Generation of Missing Data
+Table 9.6: Results for categorical features. The MAE values and their 95% conﬁdence intervals are presented for each imputation method.
+MNAR
+Generation
+Missing
+Rate
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+MBUV
+10%
+0.145
+(0.13;0.16)
+0.144
+(0.13;0.16)
+0.139
+(0.13;0.15)
+0.167
+(0.16;0.18)
+0.125
+(0.12;0.13)
+0.156
+(0.14;0.17)
+20%
+0.146
+(0.14;0.16)
+0.144
+(0.13;0.15)
+0.138
+(0.13;0.15)
+0.172
+(0.16;0.18)
+0.132
+(0.12;0.14)
+0.154
+(0.14;0.17)
+40%
+0.144
+(0.13;0.15)
+0.140
+(0.13;0.15)
+0.140
+(0.13;0.15)
+0.169
+(0.16;0.18)
+0.131
+(0.12;0.14)
+0.159
+(0.15;0.17)
+60%
+0.141
+(0.13;0.15)
+0.134
+(0.13;0.14)
+0.141
+(0.13;0.15)
+0.171
+(0.16;0.18)
+0.134
+(0.13;0.14)
+0.169
+(0.16;0.18)
+80%
+0.143
+(0.13;0.15)
+0.136
+(0.13;0.14)
+0.144
+(0.13;0.15)
+0.170
+(0.16;0.18)
+0.139
+(0.13;0.15)
+0.203
+(0.19;0.22)
+MBIR (Frequentist)
+10%
+0.137
+(0.13;0.15)
+0.136
+(0.12;0.15)
+0.133
+(0.12;0.14)
+0.166
+(0.15;0.18)
+0.127
+(0.12;0.14)
+0.136
+(0.13;0.15)
+20%
+0.128
+(0.12;0.14)
+0.131
+(0.12;0.14)
+0.128
+(0.12;0.14)
+0.140
+(0.13;0.15)
+0.118
+(0.11;0.13)
+0.132
+(0.12;0.14)
+40%
+0.130
+(0.12;0.14)
+0.132
+(0.12;0.14)
+0.138
+(0.13;0.15)
+0.188
+(0.17;0.20)
+0.122
+(0.11;0.13)
+0.163
+(0.15;0.17)
+60%
+0.133
+(0.12;0.14)
+0.131
+(0.12;0.14)
+0.150
+(0.14;0.16)
+0.184
+(0.17;0.20)
+0.135
+(0.13;0.14)
+0.193
+(0.18;0.21)
+80%
+0.143
+(0.13;0.15)
+0.136
+(0.13;0.15)
+0.184
+(0.17;0.20)
+0.201
+(0.19;0.22)
+0.171
+(0.16;0.18)
+0.205
+(0.19;0.22)
+MBIR (Bayesian)
+10%
+0.144
+(0.13;0.16)
+0.146
+(0.13;0.16)
+0.147
+(0.14;0.16)
+0.179
+(0.16;0.20)
+0.127
+(0.12;0.14)
+0.131
+(0.12;0.14)
+20%
+0.123
+(0.11;0.13)
+0.117
+(0.11;0.13)
+0.121
+(0.11;0.13)
+0.150
+(0.14;0.16)
+0.111
+(0.10;0.12)
+0.128
+(0.12;0.14)
+40%
+0.121
+(0.11;0.13)
+0.122
+(0.11;0.13)
+0.130
+(0.12;0.14)
+0.188
+(0.17;0.20)
+0.118
+(0.11;0.13)
+0.156
+(0.14;0.17)
+60%
+0.134
+(0.13;0.14)
+0.132
+(0.12;0.14)
+0.157
+(0.15;0.17)
+0.221
+(0.20;0.24)
+0.145
+(0.14;0.15)
+0.188
+(0.17;0.20)
+80%
+0.142
+(0.13;0.15)
+0.137
+(0.13;0.15)
+0.184
+(0.17;0.20)
+0.202
+(0.19;0.22)
+0.170
+(0.16;0.18)
+0.199
+(0.18;0.21)
+139
+
+=== PAGE 164 ===
+Chapter 9
+Table 9.7: Results for all (mixed) features. The MAE values and their 95% conﬁdence intervals are presented for each imputation method.
+MNAR
+Generation
+Missing
+Rate
+DAE
+VAE
+kNN
+Mean/Mode
+MICE
+SoftImp
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+µ
+(95% CI)
+MBUV
+10%
+0.116
+(0.11;0.12)
+0.105
+(0.10;0.11)
+0.087
+(0.08;0.09)
+0.129
+(0.13;0.13)
+0.076
+(0.07;0.08)
+0.092
+(0.09;0.10)
+20%
+0.118
+(0.11;0.12)
+0.106
+(0.10;0.11)
+0.088
+(0.09;0.09)
+0.131
+(0.13;0.13)
+0.078
+(0.08;0.08)
+0.093
+(0.09;0.10)
+40%
+0.116
+(0.11;0.12)
+0.104
+(0.10;0.11)
+0.089
+(0.09;0.09)
+0.129
+(0.13;0.13)
+0.077
+(0.07;0.08)
+0.096
+(0.09;0.10)
+60%
+0.116
+(0.11;0.12)
+0.103
+(0.10;0.10)
+0.091
+(0.09;0.09)
+0.130
+(0.13;0.13)
+0.079
+(0.08;0.08)
+0.103
+(0.10;0.11)
+80%
+0.116
+(0.11;0.12)
+0.103
+(0.10;0.11)
+0.095
+(0.09;0.10)
+0.130
+(0.13;0.13)
+0.082
+(0.08;0.09)
+0.122
+(0.12;0.13)
+MBIR (Frequentist)
+10%
+0.123
+(0.12;0.13)
+0.106
+(0.10;0.11)
+0.093
+(0.09;0.10)
+0.144
+(0.14;0.15)
+0.082
+(0.08;0.08)
+0.093
+(0.09;0.10)
+20%
+0.113
+(0.11;0.12)
+0.099
+(0.10;0.10)
+0.091
+(0.09;0.09)
+0.134
+(0.13;0.14)
+0.076
+(0.07;0.08)
+0.090
+(0.09;0.09)
+40%
+0.113
+(0.11;0.12)
+0.101
+(0.10;0.10)
+0.102
+(0.10;0.10)
+0.152
+(0.15;0.16)
+0.084
+(0.08;0.09)
+0.103
+(0.10;0.11)
+60%
+0.111
+(0.11;0.11)
+0.100
+(0.10;0.10)
+0.109
+(0.11;0.11)
+0.154
+(0.15;0.16)
+0.089
+(0.09;0.09)
+0.115
+(0.11;0.12)
+80%
+0.113
+(0.11;0.12)
+0.101
+(0.10;0.10)
+0.127
+(0.12;0.13)
+0.166
+(0.16;0.17)
+0.103
+(0.10;0.11)
+0.134
+(0.13;0.14)
+MBIR (Bayesian)
+10%
+0.128
+(0.12;0.13)
+0.114
+(0.11;0.12)
+0.101
+(0.10;0.10)
+0.146
+(0.14;0.15)
+0.084
+(0.08;0.09)
+0.097
+(0.09;0.10)
+20%
+0.118
+(0.12;0.12)
+0.104
+(0.10;0.11)
+0.095
+(0.09;0.10)
+0.140
+(0.14;0.14)
+0.080
+(0.08;0.08)
+0.094
+(0.09;0.10)
+40%
+0.112
+(0.11;0.11)
+0.100
+(0.10;0.10)
+0.101
+(0.10;0.10)
+0.148
+(0.14;0.15)
+0.086
+(0.08;0.09)
+0.104
+(0.10;0.11)
+60%
+0.112
+(0.11;0.11)
+0.101
+(0.10;0.10)
+0.116
+(0.11;0.12)
+0.167
+(0.16;0.17)
+0.095
+(0.09;0.10)
+0.118
+(0.11;0.12)
+80%
+0.113
+(0.11;0.12)
+0.102
+(0.10;0.10)
+0.137
+(0.13;0.14)
+0.170
+(0.17;0.17)
+0.103
+(0.10;0.11)
+0.136
+(0.13;0.14)
+MBOUV (Multivariate)
+10%
+0.141
+(0.13;0.15)
+0.134
+(0.13;0.14)
+0.114
+(0.11;0.12)
+0.196
+(0.18;0.21)
+0.113
+(0.10;0.12)
+0.113
+(0.10;0.12)
+20%
+0.135
+(0.13;0.14)
+0.136
+(0.13;0.14)
+0.122
+(0.11;0.13)
+0.199
+(0.19;0.21)
+0.144
+(0.13;0.16)
+0.131
+(0.12;0.14)
+40%
+0.142
+(0.14;0.15)
+0.148
+(0.14;0.15)
+0.149
+(0.14;0.16)
+0.212
+(0.20;0.22)
+0.176
+(0.17;0.19)
+0.156
+(0.14;0.17)
+60%
+0.142
+(0.14;0.15)
+0.152
+(0.15;0.16)
+0.171
+(0.16;0.18)
+0.225
+(0.22;0.23)
+0.269
+(0.19;0.35)
+0.182
+(0.17;0.19)
+80%
+0.139
+(0.13;0.14)
+0.150
+(0.14;0.16)
+0.204
+(0.20;0.21)
+0.248
+(0.24;0.26)
+1.017
+(-0.25;2.29)
+0.237
+(0.23;0.25)
+140
+
+=== PAGE 165 ===
+Part III
+Final Remarks
+
