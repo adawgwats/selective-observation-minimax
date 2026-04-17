@@ -29,6 +29,7 @@ from .mnar_injection import ALL_MECHANISMS, inject
 from .preprocess import stratified_split, onehot_encode
 from .minimax_adapter import ScoreMinimaxRegressor, ErmRegressor
 from .baselines import REGISTRY as BASELINE_REGISTRY
+from .christensen_adapter import ChristensenRegressor
 
 # Pereira §9.2
 MISSING_RATES: tuple[float, ...] = (10.0, 20.0, 40.0, 60.0, 80.0)
@@ -36,16 +37,19 @@ MISSING_RATES: tuple[float, ...] = (10.0, 20.0, 40.0, 60.0, 80.0)
 
 METHOD_FACTORIES = {
     # Baselines (impute-then-OLS and selection-bias-specific)
-    "oracle": lambda: BASELINE_REGISTRY["oracle"](),
-    "complete_case": lambda: BASELINE_REGISTRY["complete_case"](),
-    "mean_impute": lambda: BASELINE_REGISTRY["mean_impute"](),
-    "mice": lambda: BASELINE_REGISTRY["mice"](),
-    "knn_impute": lambda: BASELINE_REGISTRY["knn_impute"](),
-    "ipw_estimated": lambda: BASELINE_REGISTRY["ipw_estimated"](),
-    "heckman": lambda: BASELINE_REGISTRY["heckman"](),
-    # SGD-based methods from minimax_core
-    "erm_sgd": lambda: ErmRegressor(),
-    "minimax_score": lambda: ScoreMinimaxRegressor(),
+    "oracle": lambda mech=None: BASELINE_REGISTRY["oracle"](),
+    "complete_case": lambda mech=None: BASELINE_REGISTRY["complete_case"](),
+    "mean_impute": lambda mech=None: BASELINE_REGISTRY["mean_impute"](),
+    "mice": lambda mech=None: BASELINE_REGISTRY["mice"](),
+    "knn_impute": lambda mech=None: BASELINE_REGISTRY["knn_impute"](),
+    "ipw_estimated": lambda mech=None: BASELINE_REGISTRY["ipw_estimated"](),
+    "heckman": lambda mech=None: BASELINE_REGISTRY["heckman"](),
+    # SGD-based methods from minimax_core (DRO variant)
+    "erm_sgd": lambda mech=None: ErmRegressor(),
+    "minimax_score": lambda mech=None: ScoreMinimaxRegressor(),
+    # Faithful Christensen estimator (christensen_core). Needs mechanism_name to pick
+    # the right QClass (see christensen_adapter.ChristensenRegressor).
+    "christensen_faithful": lambda mech: ChristensenRegressor(mechanism_name=mech),
 }
 
 METHOD_ORDER = (
@@ -58,6 +62,7 @@ METHOD_ORDER = (
     "heckman",
     "erm_sgd",
     "minimax_score",
+    "christensen_faithful",
 )
 
 
@@ -105,7 +110,9 @@ def run_cell(
     results: list[CellResult] = []
     for method_name in methods:
         factory = METHOD_FACTORIES[method_name]
-        model = factory()
+        # Pass mechanism name so methods that need it (e.g., christensen_faithful)
+        # can pick the right QClass; others accept it via default None.
+        model = factory(mechanism)
         start = time.perf_counter()
         try:
             if method_name == "oracle":

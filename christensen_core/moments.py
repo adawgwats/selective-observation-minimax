@@ -40,7 +40,8 @@ def compute_b_n(X: np.ndarray, Y_tilde: np.ndarray) -> np.ndarray:
     Returns:
         (d,) vector.
     """
-    raise NotImplementedError("Implement: b_n = (X.T @ Y_tilde) / n")
+    n = X.shape[0]
+    return (X.T @ Y_tilde) / n
 
 
 def compute_W_n(X: np.ndarray) -> np.ndarray:
@@ -54,7 +55,8 @@ def compute_W_n(X: np.ndarray) -> np.ndarray:
     Returns:
         (d, d) symmetric positive semidefinite matrix.
     """
-    raise NotImplementedError("Implement: W_n = (X.T @ X) / n")
+    n = X.shape[0]
+    return (X.T @ X) / n
 
 
 def compute_r_n(
@@ -83,10 +85,15 @@ def compute_r_n(
     Raises:
         ValueError: if any q_values[i] ≤ 0 for i in Rₙ.
     """
-    raise NotImplementedError(
-        "Implement: for i in Rₙ, accumulate (1/q_i) * X_i * Y_tilde_i into a "
-        "d-vector running sum; divide by n."
-    )
+    n = X.shape[0]
+    mask = np.asarray(response_mask, dtype=bool)
+    q_resp = q_values[mask]
+    if np.any(q_resp <= 0):
+        raise ValueError("q_values must be strictly positive for all respondents")
+    X_resp = X[mask]
+    Y_resp = Y_tilde[mask]
+    weights = Y_resp / q_resp
+    return (X_resp.T @ weights) / n
 
 
 def compute_moments(
@@ -99,4 +106,8 @@ def compute_moments(
 
     Returns (b_n, W_n, r_n). See individual functions for details.
     """
-    raise NotImplementedError("Return (compute_b_n(X, Y_tilde), compute_W_n(X), compute_r_n(X, Y_tilde, q_values, response_mask))")
+    return (
+        compute_b_n(X, Y_tilde),
+        compute_W_n(X),
+        compute_r_n(X, Y_tilde, q_values, response_mask),
+    )

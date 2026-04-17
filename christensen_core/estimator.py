@@ -64,11 +64,45 @@ class ChristensenEstimator:
             3. Call outer_solver.solve_outer(self.q_class, X_aug, Y_tilde, response_mask).
             4. Store β̂ = M* @ b_n + m*, along with (M*, m*, θ*, b_n).
         """
-        raise NotImplementedError("See docstring for implementation outline.")
+        from .moments import compute_b_n
+        from .outer_solver import solve_outer
+
+        X = np.asarray(X, dtype=float)
+        Y_tilde = np.asarray(Y_tilde, dtype=float).copy()
+        response_mask = np.asarray(response_mask, dtype=bool)
+
+        # Defensive: enforce Y_tilde = 0 at non-respondents (Christensen's convention)
+        Y_tilde[~response_mask] = 0.0
+
+        # Prepend intercept column if requested
+        if self.fit_intercept:
+            X_aug = np.concatenate([np.ones((X.shape[0], 1)), X], axis=1)
+        else:
+            X_aug = X
+
+        self._d = X_aug.shape[1]
+
+        # Delegate to outer_solver
+        result = solve_outer(self.q_class, X_aug, Y_tilde, response_mask)
+
+        # Store artifacts
+        self._M_star = result.M_star
+        self._m_star = result.m_star
+        self._theta_star = result.theta_star
+        self._b_n = compute_b_n(X_aug, Y_tilde)
+        self._beta = result.beta_hat  # M* @ b_n + m*
+        return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Return ŷ = X_aug @ β̂. Prepends intercept column if fit_intercept."""
-        raise NotImplementedError("Apply the same intercept convention as fit(); return X_aug @ self._beta")
+        if self._beta is None:
+            raise RuntimeError("Estimator not fit.")
+        X = np.asarray(X, dtype=float)
+        if self.fit_intercept:
+            X_aug = np.concatenate([np.ones((X.shape[0], 1)), X], axis=1)
+        else:
+            X_aug = X
+        return X_aug @ self._beta
 
     @property
     def beta(self) -> np.ndarray:

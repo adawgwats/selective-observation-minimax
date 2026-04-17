@@ -49,6 +49,21 @@ FIDELITY = {
     "MBIR_Bayesian": "low",
 }
 
+# When the adaptive Q-specification pattern from reference_based_q.adaptive_centered_q_for
+# is used (a Christensen-idiomatic neighborhood around q_hat, with radius calibrated to
+# the mechanism's expected MNAR magnitude), fidelity changes for several mechanisms.
+# The diagnostic at christensen_core/tests/diagnostic_centered_vs_wide.py shows MBUV-like
+# MAR data is handled cleanly under adaptive delta=0.05 (MSE 2.6x OLS vs wide-box 26x OLS).
+FIDELITY_ADAPTIVE = {
+    "MBOV_Lower": "high",       # delta=0.30 ball captures true q-spread; monotone class correct
+    "MBOV_Higher": "high",      # symmetric of above
+    "MBOV_Stochastic": "high",  # delta=0.25 centered; MBOV-like signal w/ MCAR mix captured
+    "MBOV_Centered": "medium",  # delta=0.05 gives near-MAR behavior; non-monotone truth still a mismatch but small
+    "MBUV": "high",             # delta=0.05 centered ball ~ MAR solution; near-OLS/q_hat behavior
+    "MBIR_Frequentist": "low",  # still requires DependentOnUnobservedScore class (v2)
+    "MBIR_Bayesian": "low",
+}
+
 
 def q_class_for(mechanism: str, config: QClassConfig | None = None) -> QClass:
     """Return the Christensen QClass appropriate for the given Pereira mechanism.
@@ -63,10 +78,22 @@ def q_class_for(mechanism: str, config: QClassConfig | None = None) -> QClass:
     Raises:
         NotImplementedError: for mechanisms whose Q class is deferred to v2.
     """
-    raise NotImplementedError(
-        "Implement dispatch:\n"
-        "  MBOV_Lower / MBOV_Stochastic → Parametric2ParamForBinary(monotone='increasing')\n"
-        "  MBOV_Higher → Parametric2ParamForBinary(monotone='decreasing')\n"
-        "  MBUV / MBOV_Centered → ConstantQ (note the Q-mismatch for MBOV_Centered)\n"
-        "  MBIR_* → raise NotImplementedError until a DependentOnUnobservedScore class lands"
-    )
+    cfg = config  # pass through; QClasses default if None
+    if mechanism in ("MBOV_Lower", "MBOV_Stochastic"):
+        return Parametric2ParamForBinary(monotone="increasing", config=cfg)
+    if mechanism == "MBOV_Higher":
+        return Parametric2ParamForBinary(monotone="decreasing", config=cfg)
+    if mechanism == "MBUV":
+        return ConstantQ(config=cfg)
+    if mechanism == "MBOV_Centered":
+        # Non-monotone truth; ConstantQ is a MAR approximation (low fidelity).
+        # Returning it allows the benchmark to run; REPORT.md must flag as low-fidelity.
+        return ConstantQ(config=cfg)
+    if mechanism in ("MBIR_Frequentist", "MBIR_Bayesian"):
+        raise NotImplementedError(
+            f"Mechanism {mechanism!r} requires a DependentOnUnobservedScore QClass "
+            "that is not yet implemented (deferred to v2). See christensen_core/"
+            "pereira_q.py docstring and IMPLEMENTATION_PLAN.md §'What we are "
+            "deliberately NOT building in v1'."
+        )
+    raise ValueError(f"Unknown Pereira mechanism {mechanism!r}")

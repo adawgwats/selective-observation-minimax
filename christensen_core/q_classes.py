@@ -123,13 +123,21 @@ class ConstantQ(QClass):
         self.config = config or QClassConfig()
 
     def dim_theta(self) -> int:
-        raise NotImplementedError("return 1")
+        return 1
 
     def theta_bounds(self) -> tuple[np.ndarray, np.ndarray]:
-        raise NotImplementedError("return (np.array([q_min]), np.array([q_max]))")
+        return (
+            np.array([self.config.q_min], dtype=float),
+            np.array([self.config.q_max], dtype=float),
+        )
 
     def q_values(self, theta: np.ndarray, X: np.ndarray, Y_tilde: np.ndarray) -> np.ndarray:
-        raise NotImplementedError("broadcast theta[0] to shape (n,)")
+        # Broadcast the single scalar parameter to the full sample length, then
+        # clip into [q_min, q_max] for numerical safety in case the outer
+        # solver supplies a θ slightly outside the box (rare but harmless).
+        n = len(Y_tilde)
+        out = np.full(n, float(theta[0]), dtype=float)
+        return self.clip(out)
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +173,30 @@ class Parametric2ParamForBinary(QClass):
         self.monotone = monotone
 
     def dim_theta(self) -> int:
-        raise NotImplementedError("return 2")
+        return 2
 
     def theta_bounds(self) -> tuple[np.ndarray, np.ndarray]:
-        raise NotImplementedError("return two 2-vectors of q_min/q_max; monotone handled in feasibility check inside outer_solver")
+        # Plain box bounds on (q_0, q_1). The `monotone` flag is metadata that
+        # the outer solver reads (via self.monotone) and converts into a linear
+        # inequality constraint (q_0 <= q_1 or q_0 >= q_1). We do NOT bake that
+        # constraint into the bounds returned here.
+        q_min = self.config.q_min
+        q_max = self.config.q_max
+        return (
+            np.array([q_min, q_min], dtype=float),
+            np.array([q_max, q_max], dtype=float),
+        )
 
     def q_values(self, theta: np.ndarray, X: np.ndarray, Y_tilde: np.ndarray) -> np.ndarray:
-        raise NotImplementedError(
-            "q[i] = theta[0] if Y_tilde[i] == 0 else theta[1]. For non-respondents "
-            "(where Y_tilde is 0 by convention), q-value is ignored by r_n anyway."
-        )
+        # Convention: Y_tilde[i] == 0 selects theta[0] (q_0 = q(·,0)); any
+        # other value selects theta[1] (q_1 = q(·,1)). For binary {0,1} labels
+        # this is exactly the two-point parameterization. If a caller mistakenly
+        # passes continuous y, every nonzero entry will collapse to theta[1]
+        # silently — that is by design (the right Q class for continuous y is
+        # MonotoneInY, not this one).
+        y = np.asarray(Y_tilde)
+        out = np.where(y == 0, float(theta[0]), float(theta[1])).astype(float)
+        return self.clip(out)
 
 
 # ---------------------------------------------------------------------------
