@@ -167,7 +167,20 @@ def _apply_mbir(
     # handled. Bayesian is documented in the paper but not wired in mdatagen 0.2.0's
     # statistical_method switch. Fall back to Mann-Whitney and record the gap.
     method = "Mann-Whitney"  # mdatagen 0.2.0 only implements Mann-Whitney in _MBIR_strategy
-    gen = mMNAR(X=X_df.reset_index(drop=True).copy(), y=y_work, missTarget=True, n_Threads=1)
+    # mdatagen's MBIR calls scipy.stats.mannwhitneyu(instances[x_obs], auxiliary_ind) on
+    # every non-object column. For object/category dtype columns it throws
+    # "ufunc 'isnan' not supported for the input types". Factorize categoricals to int
+    # codes so the statistical test is well-defined. This matches the semantic intent
+    # (MBIR looks for the feature most statistically associated with target-missingness;
+    # int codes preserve distinct-group structure for the Mann-Whitney rank test).
+    X_numeric = X_df.reset_index(drop=True).copy()
+    for col in X_numeric.columns:
+        if X_numeric[col].dtype == "object" or isinstance(X_numeric[col].dtype, pd.CategoricalDtype):
+            codes, _ = pd.factorize(X_numeric[col])
+            X_numeric[col] = codes.astype(float)
+        else:
+            X_numeric[col] = X_numeric[col].astype(float)
+    gen = mMNAR(X=X_numeric, y=y_work, missTarget=True, n_Threads=1)
     amputed = gen.MBIR(missing_rate=rate_pct, columns=["target"], statistical_method=method)
 
     if "target" not in amputed.columns:
