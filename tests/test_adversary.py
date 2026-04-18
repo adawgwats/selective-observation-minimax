@@ -122,6 +122,38 @@ def test_auto_discovery_adversary_accumulates_online_state() -> None:
     assert updated_q[-1] < initial_q[-1]
 
 
+def test_auto_discovery_infers_latent_hidden_signal_when_observed() -> None:
+    config = Q1ObjectiveConfig(q_min=0.25, q_max=1.0, adversary_step_size=0.1)
+    adversary = AutoDiscoveryObservationAdversary(
+        config,
+        latent_hidden_strength=1.0,
+        latent_hidden_margin=0.5,
+    )
+
+    low_signal = adversary._infer_hidden_signal(
+        observed=True,
+        innovation=0.05,
+        expected_score=0.3,
+        prior_surprise_state=0.2,
+    )
+    high_signal = adversary._infer_hidden_signal(
+        observed=True,
+        innovation=1.0,
+        expected_score=0.3,
+        prior_surprise_state=0.2,
+    )
+    missing_signal = adversary._infer_hidden_signal(
+        observed=False,
+        innovation=0.0,
+        expected_score=0.0,
+        prior_surprise_state=0.0,
+    )
+
+    assert low_signal == 0.0
+    assert 0.0 < high_signal <= 1.0
+    assert missing_signal == 1.0
+
+
 def test_structural_break_detector_marks_post_break_examples() -> None:
     detector = RupturesStructuralBreakDetector(min_size=2, min_normalized_shift=0.1, break_decay=0.9)
     result = detector.detect(

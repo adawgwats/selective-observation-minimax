@@ -348,6 +348,8 @@ class AutoDiscoveryObservationAdversary(ObservationAdversary):
     uncertainty_set: SurpriseAwareObservationUncertaintySet | None = None
     score_decay: float = 0.85
     history_decay: float = 0.92
+    latent_hidden_strength: float = 0.6
+    latent_hidden_margin: float = 0.15
     _q_values: list[float] = field(default_factory=list)
     _seen_examples: int = 0
     _expected_score: float = 0.0
@@ -361,6 +363,10 @@ class AutoDiscoveryObservationAdversary(ObservationAdversary):
             raise ValueError("score_decay must be in [0, 1).")
         if not 0.0 <= self.history_decay < 1.0:
             raise ValueError("history_decay must be in [0, 1).")
+        if self.latent_hidden_strength < 0.0:
+            raise ValueError("latent_hidden_strength must be nonnegative.")
+        if self.latent_hidden_margin < 0.0:
+            raise ValueError("latent_hidden_margin must be nonnegative.")
 
     def current_q(
         self,
@@ -462,7 +468,16 @@ class AutoDiscoveryObservationAdversary(ObservationAdversary):
             innovation = abs(score - expected_score)
             surprise_state = self.score_decay * surprise_state + (1.0 - self.score_decay) * innovation
             surprise_scores.append(surprise_state)
-            hidden_signal = 0.0 if observed else 1.0
+            hidden_signal = (
+                0.0
+                if observed and self.latent_hidden_strength <= 0.0
+                else self._infer_hidden_signal(
+                    observed=observed,
+                    innovation=innovation,
+                    expected_score=expected_score,
+                    prior_surprise_state=surprise_state,
+                )
+            )
             history_signal = innovation + hidden_signal
             history_state = self.history_decay * history_state + (1.0 - self.history_decay) * history_signal
             expected_score = self.score_decay * expected_score + (1.0 - self.score_decay) * score
@@ -476,6 +491,26 @@ class AutoDiscoveryObservationAdversary(ObservationAdversary):
 
     def _needs_initialization(self, scores: list[float]) -> bool:
         return len(self._q_values) != len(scores)
+
+    def _infer_hidden_signal(
+        self,
+        *,
+        observed: bool,
+        innovation: float,
+        expected_score: float,
+        prior_surprise_state: float,
+    ) -> float:
+        if not observed:
+            return 1.0
+
+        # Infer latent corruption when residual shock materially exceeds expected noise.
+        baseline = abs(expected_score) + prior_surprise_state + self.config.epsilon
+        normalized_excess = (innovation - self.latent_hidden_margin * baseline) / baseline
+        if normalized_excess <= 0.0:
+            return 0.0
+
+        latent_signal = normalized_excess / (1.0 + normalized_excess)
+        return min(self.latent_hidden_strength * latent_signal, 1.0)
 
 
 @dataclass
