@@ -1,0 +1,9 @@
+# Raw data not committed (licensing + size)
+data_cache/
+
+# Intermediate artifacts
+results/
+*.csv
+*.parquet
+*.pyc
+__pycache__/
